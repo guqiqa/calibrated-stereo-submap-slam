@@ -1,0 +1,20 @@
+{
+  "mode": "fixed",
+  "run": 3,
+  "duration_s": 200.0,
+  "speed_mps": 0.2,
+  "angular_radps": 0.0,
+  "status_messages": 1992,
+  "tracking_messages": 1989,
+  "failure_messages": 0,
+  "last_state": "tracking",
+  "last_active_submap": 5,
+  "last_active_map_points": 1925,
+  "last_matching_ms": 0.653521,
+  "switch_count": 5,
+  "wrong_switch_count": 0,
+  "truth_samples": 4076,
+  "truth_start_x": -4.4554590609039513e-07,
+  "truth_end_x": 29.17392990497367,
+  "truth_distance_m": 29.173936789018843
+}

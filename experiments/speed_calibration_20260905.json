@@ -1,0 +1,51 @@
+{
+  "target_actual_speed_mps": 0.2,
+  "recommended_command_speed_mps": 0.25452206104734637,
+  "fit_actual_equals_slope_times_command_plus_intercept": {
+    "slope": 0.998223006232864,
+    "intercept": -0.05406977693126663,
+    "r_squared": 0.9999051306684419
+  },
+  "results": [
+    {
+      "command_speed_mps": 0.2,
+      "actual_speed_mps": 0.14587231396632067,
+      "distance_m": 2.183372594969796,
+      "elapsed_s": 14.967696992000128,
+      "samples": 300,
+      "start_x": 0.003774891149617039,
+      "end_x": 2.187147483355178
+    },
+    {
+      "command_speed_mps": 0.25,
+      "actual_speed_mps": 0.19495192695262942,
+      "distance_m": 2.9195807308983337,
+      "elapsed_s": 14.975900861999435,
+      "samples": 300,
+      "start_x": -3.3947863701389986e-07,
+      "end_x": 2.9195803897858688
+    },
+    {
+      "command_speed_mps": 0.275,
+      "actual_speed_mps": 0.22031968652735345,
+      "distance_m": 3.2978156176098365,
+      "elapsed_s": 14.968320214999949,
+      "samples": 300,
+      "start_x": 4.99880820731573e-09,
+      "end_x": 3.297815621290233
+    },
+    {
+      "command_speed_mps": 0.3,
+      "actual_speed_mps": 0.24575554621731582,
+      "distance_m": 3.6660703928884018,
+      "elapsed_s": 14.917548960000204,
+      "samples": 299,
+      "start_x": 0.009841232863495622,
+      "end_x": 3.6759116247130694
+    }
+  ],
+  "topics": {
+    "command": "/sim/cmd_vel",
+    "measurement": "/sim/odom"
+  }
+}

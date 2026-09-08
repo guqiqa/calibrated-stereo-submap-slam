@@ -1,0 +1,16 @@
+stereo_vo_canary:
+  ros__parameters:
+    left_topic: /camera_native/left/image_raw
+    right_topic: /camera_native/right/image_raw
+    calibration_file: /root/stereonet_test_20260828_device/calibration.yaml
+    max_pair_delta_ms: 5.0
+    expected_width: 1088
+    expected_height: 1280
+    processing_scale: 0.25
+    max_features: 500
+    stereo_epipolar_tolerance_px: 2.0
+    temporal_match_distance: 48
+    min_stereo_points: 30
+    min_pnp_inliers: 15
+    odom_frame: visual_odom
+    camera_frame: camera_native_left_optical_frame

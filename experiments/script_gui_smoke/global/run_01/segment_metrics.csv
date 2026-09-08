@@ -1,0 +1,2 @@
+segment_start_m,segment_end_m,status_messages,tracking_messages,failure_messages,tracking_rate,failure_rate,mean_active_map_points,mean_matching_ms,mean_processing_ms,switches_in_segment,wrong_switches_in_segment
+0.0,5.0,40,40,0,1.0,0.0,206.0,0.50822915,6.24176175,0,0

@@ -1,0 +1,30 @@
+{
+  "mode": "global",
+  "run": 8,
+  "started_at": "2026-09-05T17:44:25+0800",
+  "key_parameters": {
+    "image_size": "640x480",
+    "image_rate_hz": 15,
+    "baseline_m": 0.07,
+    "processing_scale": 0.75,
+    "submap_length_m": 5.0,
+    "submap_overlap_m": 1.5,
+    "candidate_count": 3,
+    "representative_keyframes": 3,
+    "local_window_keyframes": 15,
+    "keyframe_distance_m": 0.3,
+    "keyframe_angle_deg": 5.0,
+    "switch_confirm_frames": 3,
+    "switch_min_matches": 30,
+    "switch_min_inliers": 20,
+    "switch_max_reprojection_px": 3.0,
+    "smooth_transition_frames": 5
+  },
+  "topics": {
+    "left": "/sim/left/image_raw",
+    "right": "/sim/right/image_raw",
+    "visual_odom": "/visual_slam/odometry_sim",
+    "ground_truth": "/sim/odom",
+    "status": "/visual_slam/status_sim"
+  }
+}

@@ -1,0 +1,29 @@
+# ROS 2 and colcon build outputs
+/build/
+/install/
+/log/
+
+# Python and editor caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.vscode/
+.idea/
+
+# Experiment runtime output: keep lightweight summaries and profiles only.
+/experiments/**/status.jsonl
+/experiments/**/stereo_vo_sim.log
+/experiments/**/gazebo.log
+/experiments/**/*.log
+/experiments/**/visual_odom.csv
+/experiments/**/sim_odom.csv
+/experiments/**/map_points.csv
+/experiments/**/*.pid
+/experiments/**/*.lock
+
+# Temporary and machine-local files
+*.tmp
+*.bak
+*.swp
+Thumbs.db
+desktop.ini

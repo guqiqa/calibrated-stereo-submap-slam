@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>民航视觉 SLAM 子地图算力优化实验参数</title>
+  <style>
+    :root { --ink:#18222d; --muted:#607080; --line:#d6dee5; --paper:#f5f7f8; --blue:#1677a8; --green:#23845b; --orange:#c87521; --red:#b94444; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--paper); font:15px/1.55 "Segoe UI", "Microsoft YaHei", sans-serif; }
+    main { max-width:1180px; margin:0 auto; padding:28px 22px 48px; }
+    h1 { margin:0 0 5px; font-size:29px; letter-spacing:0; }
+    h2 { margin:28px 0 12px; font-size:20px; border-left:4px solid var(--blue); padding-left:10px; }
+    .subtitle { color:var(--muted); margin:0 0 22px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:12px; }
+    .panel { background:#fff; border:1px solid var(--line); border-radius:6px; padding:16px; }
+    .metric { display:flex; justify-content:space-between; align-items:baseline; border-bottom:1px solid #edf1f3; padding:7px 0; }
+    .metric:last-child { border-bottom:0; }
+    .value { font-weight:700; color:var(--blue); white-space:nowrap; }
+    .bar-row { display:grid; grid-template-columns:180px 1fr 82px; gap:10px; align-items:center; margin:10px 0; }
+    .bar { height:14px; background:#e8eef2; border-radius:2px; overflow:hidden; }
+    .fill { height:100%; background:var(--blue); }
+    .fill.green { background:var(--green); }
+    .fill.orange { background:var(--orange); }
+    .flow { display:flex; flex-wrap:wrap; gap:0; align-items:center; }
+    .flow span { background:#e8f2f6; border:1px solid #b8d4df; padding:9px 12px; margin:4px 0; }
+    .flow b { color:var(--muted); padding:0 7px; }
+    table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); }
+    th,td { text-align:left; padding:9px 11px; border-bottom:1px solid #e8edf0; }
+    th { background:#edf3f6; font-weight:700; }
+    tr:last-child td { border-bottom:0; }
+    .g { color:var(--blue); font-weight:700; } .s { color:var(--green); font-weight:700; } .p { color:var(--orange); font-weight:700; }
+    .note { border-left:4px solid var(--orange); background:#fff8ed; padding:12px 14px; margin-top:12px; }
+    .ok { color:var(--green); font-weight:700; }
+    @media (max-width:650px) { .bar-row { grid-template-columns:125px 1fr 70px; font-size:13px; } h1 { font-size:23px; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>民航视觉 SLAM 子地图算力优化实验参数</h1>
+  <p class="subtitle">双目视觉里程计 + 固定子地图 + 视觉/位姿先验联合检索 | 当前 Gazebo Classic 仿真版本</p>
+
+  <h2>系统处理链路</h2>
+  <div class="panel flow">
+    <span>双目图像</span><b>-&gt;</b><span>校正与三角化</span><b>-&gt;</b><span>ORB 特征</span><b>-&gt;</b><span>VO / PnP</span><b>-&gt;</b><span>关键帧</span><b>-&gt;</b><span>固定子地图</span><b>-&gt;</b><span>联合检索</span><b>-&gt;</b><span>局部验证</span><b>-&gt;</b><span>连续位姿</span>
+  </div>
+
+  <h2>核心参数比例图</h2>
+  <div class="panel">
+    <div class="bar-row"><span>处理分辨率</span><div class="bar"><div class="fill" style="width:75%"></div></div><span class="value">640 x 480</span></div>
+    <div class="bar-row"><span>处理缩放</span><div class="bar"><div class="fill" style="width:75%"></div></div><span class="value">0.75</span></div>
+    <div class="bar-row"><span>图像频率</span><div class="bar"><div class="fill" style="width:60%"></div></div><span class="value">15 Hz</span></div>
+    <div class="bar-row"><span>双目基线</span><div class="bar"><div class="fill green" style="width:70%"></div></div><span class="value">70 mm</span></div>
+    <div class="bar-row"><span>子地图长度</span><div class="bar"><div class="fill orange" style="width:50%"></div></div><span class="value">5.0 m</span></div>
+    <div class="bar-row"><span>重叠长度</span><div class="bar"><div class="fill orange" style="width:30%"></div></div><span class="value">1.5 m</span></div>
+    <div class="bar-row"><span>有效步长</span><div class="bar"><div class="fill green" style="width:70%"></div></div><span class="value">3.5 m</span></div>
+    <div class="bar-row"><span>局部关键帧窗口</span><div class="bar"><div class="fill" style="width:75%"></div></div><span class="value">15 帧</span></div>
+    <div class="bar-row"><span>联合评分权重</span><div class="bar"><div class="fill" style="width:50%"></div></div><span class="value">V 0.50</span></div>
+    <div class="bar-row"><span>联合评分权重</span><div class="bar"><div class="fill green" style="width:30%"></div></div><span class="value">P 0.30</span></div>
+    <div class="bar-row"><span>联合评分权重</span><div class="bar"><div class="fill orange" style="width:20%"></div></div><span class="value">T 0.20</span></div>
+  </div>
+
+  <h2>固定实验参数</h2>
+  <div class="grid">
+    <div class="panel"><div class="metric"><span>图像输入</span><span class="value">640 x 480 / 15 Hz</span></div><div class="metric"><span>双目基线</span><span class="value">0.070 m</span></div><div class="metric"><span>处理缩放</span><span class="value">0.75</span></div><div class="metric"><span>最大深度</span><span class="value">25 m</span></div></div>
+    <div class="panel"><div class="metric"><span>子地图长度</span><span class="value">5.0 m</span></div><div class="metric"><span>子地图重叠</span><span class="value">1.5 m</span></div><div class="metric"><span>全局候选数</span><span class="value">3</span></div><div class="metric"><span>代表性关键帧</span><span class="value">3 帧</span></div></div>
+    <div class="panel"><div class="metric"><span>局部窗口</span><span class="value">15 帧</span></div><div class="metric"><span>关键帧距离阈值</span><span class="value">0.3 m</span></div><div class="metric"><span>关键帧角度阈值</span><span class="value">5 deg</span></div><div class="metric"><span>平滑过渡</span><span class="value">5 帧</span></div></div>
+    <div class="panel"><div class="metric"><span>切换确认</span><span class="value">连续 3 帧</span></div><div class="metric"><span>最少匹配点</span><span class="value">30</span></div><div class="metric"><span>最少 PnP 内点</span><span class="value">20</span></div><div class="metric"><span>最大重投影误差</span><span class="value">3 px</span></div></div>
+  </div>
+
+  <h2>G / S / P 实验分组</h2>
+  <table><thead><tr><th>组别</th><th>地图管理</th><th>候选检索</th><th>研究问题</th></tr></thead><tbody>
+    <tr><td class="g">G 全局地图</td><td>所有关键帧和地图点</td><td>全局局部匹配</td><td>大地图计算开销基线</td></tr>
+    <tr><td class="s">S 固定子地图</td><td>当前及相邻子地图</td><td>不使用全局候选检索</td><td>地图分块本身的算力收益</td></tr>
+    <tr><td class="p">P 联合检索</td><td>当前、相邻及 Top-3 候选</td><td>视觉 0.50 + 位姿 0.30 + 拓扑 0.20</td><td>候选选择与切换稳定性</td></tr>
+  </tbody></table>
+
+  <h2>已完成短测</h2>
+  <table><thead><tr><th>模式</th><th>运行时长</th><th>实际位移</th><th>Tracking</th><th>失败</th><th>切换</th><th>错误调用</th></tr></thead><tbody>
+    <tr><td class="g">G</td><td>60 s</td><td>8.75 m</td><td class="ok">610</td><td class="ok">0</td><td>0</td><td class="ok">0</td></tr>
+    <tr><td class="s">S</td><td>60 s</td><td>8.76 m</td><td class="ok">660</td><td class="ok">0</td><td>1</td><td class="ok">0</td></tr>
+    <tr><td class="p">P</td><td>60 s</td><td>8.75 m</td><td class="ok">683</td><td class="ok">0</td><td>1</td><td class="ok">0</td></tr>
+  </tbody></table>
+
+  <div class="note"><strong>后续主实验：</strong>有效路线调整为 45 m，使用当前约 62 m 场景的 45～58 m 缓冲区；建议运行约 320 s，并按真实位置截取 0～45 m。30 m 之后不再作为主实验终点，端墙区域另列为退化专项。</div>
+  <h2>历史 48 m 走廊结果</h2>
+  <table><thead><tr><th>模式</th><th>实际位移</th><th>Tracking</th><th>失败消息</th><th>最终子地图</th><th>切换</th><th>错误调用</th><th>末帧状态</th></tr></thead><tbody>
+    <tr><td class="g">G</td><td>43.48 m</td><td>1904</td><td>958</td><td>0</td><td>0</td><td class="ok">0</td><td>端墙特征不足</td></tr>
+    <tr><td class="s">S</td><td>43.48 m</td><td>1792</td><td>1011</td><td>6</td><td>6</td><td class="ok">0</td><td>端墙特征不足</td></tr>
+    <tr><td class="p">P</td><td>43.48 m</td><td>1771</td><td>940</td><td>6</td><td>6</td><td class="ok">0</td><td>端墙特征不足</td></tr>
+  </tbody></table>
+  <div class="note"><strong>历史结果说明：</strong>该组实验是在旧场景和旧主实验口径下获得的历史数据，不作为新的45 m主实验结果。末端端墙区域的视差和纹理不足应单独统计。</div>
+  <h2>有效路线 v2 结果</h2>
+  <table><thead><tr><th>模式</th><th>运行时长</th><th>实际位移</th><th>Tracking</th><th>失败消息</th><th>最终子地图</th><th>切换</th><th>错误调用</th></tr></thead><tbody>
+    <tr><td class="g">G</td><td>280 s</td><td>40.83 m</td><td>2098</td><td>738</td><td>0</td><td>0</td><td class="ok">0</td></tr>
+    <tr><td class="s">S</td><td>280 s</td><td>40.84 m</td><td>2210</td><td>786</td><td>5</td><td>5</td><td class="ok">0</td></tr>
+    <tr><td class="p">P</td><td>280 s</td><td>40.84 m</td><td>2173</td><td>779</td><td>5</td><td>5</td><td class="ok">0</td></tr>
+  </tbody></table>
+  <div class="note"><strong>有效路线结论：</strong>0～30 m 内三组 Tracking 率约为 99.7% / 99.8% / 99.7%；平均活动地图点约为 G=4,467、S=2,237、P=2,237，S/P 相对 G 减少约 50%。30～35 m 末端退化段三组 Tracking 率均约 8%，应单独作为场景边界专项分析。</div>
+  <h2>30 m 中尺度基线最终结果</h2>
+  <table><thead><tr><th>模式</th><th>有效次数</th><th>平均位移</th><th>平均活动地图点</th><th>平均匹配耗时</th><th>平均处理耗时</th><th>平均切换</th><th>错误调用</th></tr></thead><tbody>
+    <tr><td class="g">G</td><td>9</td><td>29.17 m</td><td>4138.7</td><td>1.480 ms</td><td>7.160 ms</td><td>0</td><td class="ok">0</td></tr>
+    <tr><td class="s">S</td><td>10</td><td>29.17 m</td><td>2281.5</td><td>2.280 ms</td><td>8.070 ms</td><td>5</td><td class="ok">0</td></tr>
+    <tr><td class="p">P</td><td>10</td><td>29.18 m</td><td>2254.4</td><td>2.760 ms</td><td>8.490 ms</td><td>5</td><td class="ok">0</td></tr>
+  </tbody></table>
+  <div class="note"><strong>中尺度结论：</strong>有效样本均无失败消息；相对 G 组，S/P 活动地图点分别减少约 44.9% / 45.5%。该结果作为中尺度基线保留，不替代新的45 m主实验。当前采用统一136 m最大场景，45 m路线与60/90/120 m路线均按位置截取。</div>
+  <div class="note"><strong>解释边界：</strong>30 m 场景的全局地图规模仍较小，子地图卸载和全局搜索削减优势可能尚未充分发挥；S/P 每帧多候选验证的额外开销反而占主导。因此当前结果只证明活动地图点减少，不证明总算力下降。45 m 主实验用于验证规模效应，必要时再扩展到60/90/120 m。</div>
+  <h2>场景规模扩展</h2>
+  <table><thead><tr><th>场景</th><th>有效路线</th><th>建议总长度</th><th>预计子地图起点</th><th>用途</th></tr></thead><tbody>
+    <tr><td class="p">主实验</td><td>45 m</td><td>统一136 m场景</td><td>13</td><td>当前论文主实验</td></tr>
+    <tr><td class="s">高负载一级</td><td>60 m</td><td>统一136 m场景</td><td>18</td><td>初步验证规模效应</td></tr>
+    <tr><td class="g">高负载二级</td><td>90 m</td><td>统一136 m场景</td><td>26</td><td>验证全局地图增长收益</td></tr>
+    <tr><td class="p">高负载三级</td><td>120 m</td><td>统一136 m场景</td><td>35</td><td>观察高负载资源拐点</td></tr>
+  </tbody></table>
+</main>
+</body>
+</html>

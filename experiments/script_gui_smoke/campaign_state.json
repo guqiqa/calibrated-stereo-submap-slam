@@ -1,0 +1,15 @@
+{
+  "state": "complete",
+  "profile": "main_45m",
+  "route_m": 45.0,
+  "modes": [
+    "global"
+  ],
+  "runs": 1,
+  "output": "/mnt/d/\u79d1\u7814slam/experiments/script_gui_smoke",
+  "gazebo_started_by_script": false,
+  "gazebo_gui": true,
+  "gazebo_log": null,
+  "gzclient_log": "/mnt/d/\u79d1\u7814slam/experiments/script_gui_smoke/gzclient.log",
+  "updated_at": "2026-09-07T16:10:49+0800"
+}

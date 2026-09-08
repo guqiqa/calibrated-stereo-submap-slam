@@ -1,0 +1,20 @@
+{
+  "mode": "global",
+  "run": 1,
+  "duration_s": 5.0,
+  "speed_mps": 0.2,
+  "angular_radps": 0.0,
+  "status_messages": 47,
+  "tracking_messages": 47,
+  "failure_messages": 0,
+  "last_state": "tracking",
+  "last_active_submap": 0,
+  "last_active_map_points": 379,
+  "last_matching_ms": 0.931003,
+  "switch_count": 0,
+  "wrong_switch_count": 0,
+  "truth_samples": 142,
+  "truth_start_x": -5.038960966184311e-07,
+  "truth_end_x": 0.7302211161919019,
+  "truth_distance_m": 0.730225028876177
+}

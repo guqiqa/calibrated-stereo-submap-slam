@@ -1,0 +1,47 @@
+/stereo_vo_sim:
+  ros__parameters:
+    camera_frame: stereo_left_optical_frame
+    candidate_count: 3
+    keyframe_angle_deg: 5.0
+    keyframe_distance_m: 0.3
+    left_info_topic: /sim/left/camera_info
+    left_topic: /sim/left/image_raw
+    local_window_keyframes: 15
+    max_depth_m: 25.0
+    max_disparity: 160.0
+    max_features: 1200
+    max_pair_delta_ms: 10.0
+    min_pnp_inliers: 18
+    min_stereo_points: 35
+    odom_frame: visual_odom_sim
+    odometry_topic: /visual_slam/odometry_sim
+    processing_scale: 0.75
+    qos_overrides:
+      /clock:
+        subscription:
+          depth: 1
+          durability: volatile
+          history: keep_last
+          reliability: best_effort
+      /parameter_events:
+        publisher:
+          depth: 1000
+          durability: volatile
+          history: keep_last
+          reliability: reliable
+    representative_keyframes: 3
+    right_info_topic: /sim/right/camera_info
+    right_topic: /sim/right/image_raw
+    smooth_transition_frames: 5
+    status_topic: /visual_slam/status_sim
+    stereo_epipolar_tolerance_px: 2.0
+    submap_length_m: 5.0
+    submap_mode: global
+    submap_overlap_m: 1.5
+    switch_confirm_frames: 3
+    switch_max_reprojection_px: 3.0
+    switch_min_inliers: 20
+    switch_min_matches: 30
+    temporal_match_distance: 52
+    use_sim_time: true
+

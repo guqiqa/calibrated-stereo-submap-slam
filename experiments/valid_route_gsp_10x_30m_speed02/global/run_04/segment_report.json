@@ -1,0 +1,92 @@
+{
+  "segment_size_m": 5.0,
+  "max_position_m": 30.0,
+  "source_status_messages": 1724,
+  "segment_count": 6,
+  "segments": [
+    {
+      "segment_start_m": 0.0,
+      "segment_end_m": 5.0,
+      "status_messages": 324,
+      "tracking_messages": 321,
+      "failure_messages": 0,
+      "tracking_rate": 0.9907407407407407,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 837.7654320987655,
+      "mean_matching_ms": 0.7700808086419753,
+      "mean_processing_ms": 6.762185895061728,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    },
+    {
+      "segment_start_m": 5.0,
+      "segment_end_m": 10.0,
+      "status_messages": 268,
+      "tracking_messages": 268,
+      "failure_messages": 0,
+      "tracking_rate": 1.0,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 2587.3805970149256,
+      "mean_matching_ms": 1.1494348544776118,
+      "mean_processing_ms": 7.228811679104477,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    },
+    {
+      "segment_start_m": 10.0,
+      "segment_end_m": 15.0,
+      "status_messages": 279,
+      "tracking_messages": 279,
+      "failure_messages": 0,
+      "tracking_rate": 1.0,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 4135.8422939068105,
+      "mean_matching_ms": 1.4477751433691757,
+      "mean_processing_ms": 7.430550071684587,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    },
+    {
+      "segment_start_m": 15.0,
+      "segment_end_m": 20.0,
+      "status_messages": 279,
+      "tracking_messages": 279,
+      "failure_messages": 0,
+      "tracking_rate": 1.0,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 5436.885304659499,
+      "mean_matching_ms": 1.515789247311828,
+      "mean_processing_ms": 7.679656129032258,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    },
+    {
+      "segment_start_m": 20.0,
+      "segment_end_m": 25.0,
+      "status_messages": 271,
+      "tracking_messages": 271,
+      "failure_messages": 0,
+      "tracking_rate": 1.0,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 7373.538745387454,
+      "mean_matching_ms": 1.6988360516605165,
+      "mean_processing_ms": 7.904902693726937,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    },
+    {
+      "segment_start_m": 25.0,
+      "segment_end_m": 30.0,
+      "status_messages": 271,
+      "tracking_messages": 271,
+      "failure_messages": 0,
+      "tracking_rate": 1.0,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 9084.066420664207,
+      "mean_matching_ms": 2.119632287822878,
+      "mean_processing_ms": 8.247391992619926,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "mode": "joint",
+  "run": 1,
+  "duration_s": 280.0,
+  "speed_mps": 0.2,
+  "angular_radps": 0.0,
+  "status_messages": 3111,
+  "tracking_messages": 2288,
+  "failure_messages": 820,
+  "last_state": "insufficient_stereo_features",
+  "last_active_submap": 5,
+  "last_active_map_points": 1122,
+  "last_matching_ms": 0.483458,
+  "switch_count": 5,
+  "wrong_switch_count": 0,
+  "truth_samples": 5675,
+  "truth_start_x": -5.550027692314034e-07,
+  "truth_end_x": 40.844380692059474,
+  "truth_distance_m": 40.844386717535286
+}

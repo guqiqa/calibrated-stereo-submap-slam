@@ -1,0 +1,14 @@
+{
+  "profile": "baseline_30m_speed02",
+  "route_m": 30.0,
+  "duration_s": 206.0,
+  "modes": [
+    "global",
+    "fixed",
+    "joint"
+  ],
+  "runs": 10,
+  "speed_mps": 0.2,
+  "angular_radps": 0.0,
+  "scene_model": "136 m maximum scene: up to 120 m evaluation route + approximately 12 m buffer"
+}

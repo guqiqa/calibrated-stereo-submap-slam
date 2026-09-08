@@ -1,0 +1,14 @@
+{
+  "profile": "main_45m",
+  "route_m": 45.0,
+  "duration_s": 2.0,
+  "modes": [
+    "global"
+  ],
+  "runs": 1,
+  "command_speed_mps": 0.254522061,
+  "target_actual_speed_mps": 0.2,
+  "speed_calibration": "experiments/speed_calibration_20260905.json",
+  "angular_radps": 0.0,
+  "scene_model": "136 m maximum scene: up to 120 m evaluation route + approximately 12 m buffer"
+}

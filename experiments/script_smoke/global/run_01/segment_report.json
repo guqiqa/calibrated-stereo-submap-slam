@@ -1,0 +1,22 @@
+{
+  "segment_size_m": 5.0,
+  "max_position_m": 45.0,
+  "source_status_messages": 133,
+  "segment_count": 1,
+  "segments": [
+    {
+      "segment_start_m": 0.0,
+      "segment_end_m": 5.0,
+      "status_messages": 133,
+      "tracking_messages": 132,
+      "failure_messages": 0,
+      "tracking_rate": 0.9924812030075187,
+      "failure_rate": 0.0,
+      "mean_active_map_points": 437.0375939849624,
+      "mean_matching_ms": 0.6799522556390978,
+      "mean_processing_ms": 6.382557443609023,
+      "switches_in_segment": 0,
+      "wrong_switches_in_segment": 0
+    }
+  ]
+}
