@@ -25,6 +25,8 @@ stereo_vo_sim:
     motion_reference_frames: 5
     motion_reference_translation_m: 0.04
     planar_motion_constraint: true
+    straight_motion_constraint: true
+    stereo_translation_scale_factor: 1.08
     loop_closure_enabled: true
     loop_closure_apply_correction: false
     loop_check_period_frames: 15

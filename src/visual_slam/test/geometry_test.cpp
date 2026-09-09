@@ -45,5 +45,28 @@ int main()
   assert(std::abs(planar.at<double>(2, 1)) < 1e-12);
   assert(std::abs(planar.at<double>(0, 3) - 0.4) < 1e-12);
   assert(std::abs(planar.at<double>(2, 3) - 3.5) < 1e-12);
+
+  cv::Mat drifting_motion = cv::Mat::eye(4, 4, CV_64F);
+  drifting_motion.at<double>(0, 0) = 0.99;
+  drifting_motion.at<double>(0, 1) = 0.04;
+  drifting_motion.at<double>(0, 2) = 0.12;
+  drifting_motion.at<double>(1, 0) = -0.03;
+  drifting_motion.at<double>(1, 1) = 0.99;
+  drifting_motion.at<double>(1, 2) = 0.05;
+  drifting_motion.at<double>(2, 0) = -0.11;
+  drifting_motion.at<double>(2, 1) = -0.06;
+  drifting_motion.at<double>(2, 2) = 0.98;
+  drifting_motion.at<double>(0, 3) = 0.02;
+  drifting_motion.at<double>(1, 3) = -0.01;
+  drifting_motion.at<double>(2, 3) = -0.03;
+  const cv::Mat straight = visual_slam::constrain_optical_relative_motion_to_straight_ground(
+    drifting_motion);
+  assert(std::abs(straight.at<double>(0, 3)) < 1e-12);
+  assert(std::abs(straight.at<double>(1, 3)) < 1e-12);
+  assert(std::abs(straight.at<double>(2, 3) + 0.03) < 1e-12);
+  assert(std::abs(straight.at<double>(0, 1)) < 1e-12);
+  assert(std::abs(straight.at<double>(1, 0)) < 1e-12);
+  assert(std::abs(straight.at<double>(1, 2)) < 1e-12);
+  assert(std::abs(straight.at<double>(2, 1)) < 1e-12);
   return 0;
 }

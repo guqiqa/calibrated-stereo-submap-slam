@@ -60,4 +60,23 @@ inline cv::Mat constrain_optical_pose_to_ground_plane(const cv::Mat & pose)
   return constrained;
 }
 
+inline cv::Mat constrain_optical_relative_motion_to_straight_ground(const cv::Mat & motion)
+{
+  cv::Mat constrained = motion.clone();
+  // For the straight corridor profile, optical z is the travel axis and optical x/y
+  // are constrained to zero. The robot keeps its heading, so relative yaw is zero.
+  constrained.at<double>(0, 0) = 1.0;
+  constrained.at<double>(0, 1) = 0.0;
+  constrained.at<double>(0, 2) = 0.0;
+  constrained.at<double>(1, 0) = 0.0;
+  constrained.at<double>(1, 1) = 1.0;
+  constrained.at<double>(1, 2) = 0.0;
+  constrained.at<double>(2, 0) = 0.0;
+  constrained.at<double>(2, 1) = 0.0;
+  constrained.at<double>(2, 2) = 1.0;
+  constrained.at<double>(0, 3) = 0.0;
+  constrained.at<double>(1, 3) = 0.0;
+  return constrained;
+}
+
 }  // namespace visual_slam

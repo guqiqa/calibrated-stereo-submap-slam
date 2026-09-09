@@ -115,6 +115,9 @@ public:
     motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 5);
     motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
     planar_motion_constraint_ = declare_parameter<bool>("planar_motion_constraint", true);
+    straight_motion_constraint_ = declare_parameter<bool>("straight_motion_constraint", true);
+    stereo_translation_scale_factor_ = declare_parameter<double>(
+      "stereo_translation_scale_factor", 1.08);
     loop_closure_enabled_ = declare_parameter<bool>("loop_closure_enabled", true);
     loop_closure_apply_correction_ = declare_parameter<bool>("loop_closure_apply_correction", false);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
@@ -171,6 +174,9 @@ public:
       loop_max_reprojection_px_ <= 0.0)
     {
       throw std::runtime_error("invalid stereo geometry quality parameters");
+    }
+    if (stereo_translation_scale_factor_ < 0.8 || stereo_translation_scale_factor_ > 1.3) {
+      throw std::runtime_error("stereo_translation_scale_factor must be within [0.8, 1.3]");
     }
     orb_ = cv::ORB::create(max_features_);
     matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, false);
@@ -1287,6 +1293,13 @@ private:
         pair_delta_ms, elapsed_ms(started));
       return;
     }
+    if (straight_motion_constraint_) {
+      selected_transform = visual_slam::constrain_optical_relative_motion_to_straight_ground(
+        selected_transform);
+    }
+    selected_transform.at<double>(0, 3) *= stereo_translation_scale_factor_;
+    selected_transform.at<double>(1, 3) *= stereo_translation_scale_factor_;
+    selected_transform.at<double>(2, 3) *= stereo_translation_scale_factor_;
     last_relative_translation_[0] = selected_transform.at<double>(0, 3);
     last_relative_translation_[1] = selected_transform.at<double>(1, 3);
     last_relative_translation_[2] = selected_transform.at<double>(2, 3);
@@ -1535,6 +1548,8 @@ private:
   int motion_reference_frames_{};
   double motion_reference_translation_m_{};
   bool planar_motion_constraint_{true};
+  bool straight_motion_constraint_{true};
+  double stereo_translation_scale_factor_{1.08};
   bool loop_closure_enabled_{true};
   bool loop_closure_apply_correction_{false};
   int loop_check_period_frames_{};
