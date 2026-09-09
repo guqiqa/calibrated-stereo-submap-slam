@@ -24,6 +24,12 @@ stereo_vo_sim:
     stable_map_min_observations: 2
     motion_reference_frames: 5
     motion_reference_translation_m: 0.04
+    loop_closure_enabled: true
+    loop_check_period_frames: 15
+    loop_min_keyframe_gap: 8
+    loop_min_matches: 35
+    loop_min_inliers: 25
+    loop_max_reprojection_px: 2.5
     initial_gazebo_x: 0.08
     initial_gazebo_y: 0.035
     initial_gazebo_z: 0.32

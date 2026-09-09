@@ -226,6 +226,8 @@ ros2 run visual_slam_gazebo run_experiment_profile.py \
 
 往返实验的 `summary.json` 同时保存 `truth_path_distance_m`、`visual_path_distance_m`、`visual_truth_distance_ratio` 和 `visual_closure_error_m`。路径比例用于尺度评估，闭合误差用于评估累计漂移，不能用起终点跨度代替往返路径长度。
 
+视觉回环检查默认每 15 帧运行一次，要求至少 35 个匹配、25 个 PnP 内点且重投影误差不超过 2.5 px；通过后使用 5 帧平滑校正。相关字段包括 `loop_closure_accepted`、`loop_closure_keyframe`、`loop_closure_inliers` 和 `loop_closure_count`。
+
 另开终端启动独立仿真 VO：
 
 ```bash

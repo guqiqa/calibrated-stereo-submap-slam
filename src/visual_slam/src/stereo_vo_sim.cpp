@@ -114,6 +114,12 @@ public:
     stable_map_min_observations_ = declare_parameter<int>("stable_map_min_observations", 2);
     motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 5);
     motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
+    loop_closure_enabled_ = declare_parameter<bool>("loop_closure_enabled", true);
+    loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
+    loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
+    loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
+    loop_min_inliers_ = declare_parameter<int>("loop_min_inliers", 25);
+    loop_max_reprojection_px_ = declare_parameter<double>("loop_max_reprojection_px", 2.5);
     initial_gazebo_x_ = declare_parameter<double>("initial_gazebo_x", 0.08);
     initial_gazebo_y_ = declare_parameter<double>("initial_gazebo_y", 0.035);
     initial_gazebo_z_ = declare_parameter<double>("initial_gazebo_z", 0.32);
@@ -158,7 +164,9 @@ public:
     if (min_disparity_ <= 0.0 || min_3d3d_inliers_ < 3 || max_3d3d_residual_m_ <= 0.0 ||
       motion_translation_tolerance_m_ <= 0.0 || motion_rotation_tolerance_deg_ <= 0.0 ||
       stable_map_min_observations_ < 1 || motion_reference_frames_ < 2 ||
-      motion_reference_translation_m_ <= 0.0)
+      motion_reference_translation_m_ <= 0.0 || loop_check_period_frames_ < 1 ||
+      loop_min_keyframe_gap_ < 1 || loop_min_matches_ < 6 || loop_min_inliers_ < 6 ||
+      loop_max_reprojection_px_ <= 0.0)
     {
       throw std::runtime_error("invalid stereo geometry quality parameters");
     }
@@ -214,6 +222,16 @@ private:
   {
     double stamp{0.0};
     cv::Mat pose;
+  };
+
+  struct LoopClosure
+  {
+    bool accepted{false};
+    int keyframe_id{-1};
+    int matches{0};
+    int inliers{0};
+    double reprojection_rmse{std::numeric_limits<double>::infinity()};
+    cv::Mat corrected_pose;
   };
 
   struct Keyframe
@@ -488,6 +506,73 @@ private:
     inliers = static_cast<int>(best_indices.size());
     rmse = std::sqrt(squared_error / static_cast<double>(best_indices.size()));
     return true;
+  }
+
+  LoopClosure detect_loop_closure(const Frame & frame) const
+  {
+    LoopClosure best;
+    if (!loop_closure_enabled_ || frame.descriptors.empty() || keyframes_.empty() ||
+      next_keyframe_id_ < loop_min_keyframe_gap_)
+    {
+      return best;
+    }
+    for (const auto & entry : keyframes_) {
+      const Keyframe & keyframe = entry.second;
+      if (keyframe.id + loop_min_keyframe_gap_ >= next_keyframe_id_ ||
+        keyframe.frame.descriptors.empty())
+      {
+        continue;
+      }
+      std::vector<std::vector<cv::DMatch>> candidates;
+      matcher_->knnMatch(keyframe.frame.descriptors, frame.descriptors, candidates, 2);
+      std::vector<cv::Point3f> object_points;
+      std::vector<cv::Point2f> image_points;
+      std::set<int> used_current_indices;
+      for (const auto & candidate : candidates) {
+        if (candidate.size() != 2 || candidate[0].distance >= 0.76F * candidate[1].distance ||
+          candidate[0].distance > temporal_match_distance_ ||
+          !used_current_indices.insert(candidate[0].trainIdx).second)
+        {
+          continue;
+        }
+        object_points.push_back(transform_point(keyframe.world_pose,
+          keyframe.frame.points3d[candidate[0].queryIdx]));
+        image_points.push_back(frame.keypoints[candidate[0].trainIdx].pt);
+      }
+      if (static_cast<int>(object_points.size()) < loop_min_matches_) {
+        continue;
+      }
+      cv::Mat rotation_vector;
+      cv::Mat translation_vector;
+      cv::Mat inliers;
+      const bool ok = cv::solvePnPRansac(object_points, image_points, rectified_k_, cv::Mat(),
+        rotation_vector, translation_vector, false, 150, loop_max_reprojection_px_, 0.99,
+        inliers, cv::SOLVEPNP_ITERATIVE);
+      if (!ok || inliers.rows < loop_min_inliers_ || inliers.rows <= best.inliers) {
+        continue;
+      }
+      cv::Mat rotation;
+      cv::Rodrigues(rotation_vector, rotation);
+      cv::Mat corrected_pose = pose_from_camera_transform(rotation, translation_vector);
+      std::vector<cv::Point2f> projected;
+      cv::projectPoints(object_points, rotation_vector, translation_vector, rectified_k_, cv::Mat(), projected);
+      double squared_error = 0.0;
+      for (int i = 0; i < inliers.rows; ++i) {
+        const int index = inliers.at<int>(i, 0);
+        squared_error += cv::norm(projected[index] - image_points[index]) *
+          cv::norm(projected[index] - image_points[index]);
+      }
+      best.accepted = true;
+      best.keyframe_id = keyframe.id;
+      best.matches = static_cast<int>(object_points.size());
+      best.inliers = inliers.rows;
+      best.reprojection_rmse = std::sqrt(squared_error / static_cast<double>(inliers.rows));
+      best.corrected_pose = corrected_pose;
+    }
+    if (best.accepted && best.reprojection_rmse > loop_max_reprojection_px_) {
+      best.accepted = false;
+    }
+    return best;
   }
 
   void ensure_submaps_for_distance(double distance)
@@ -1210,6 +1295,16 @@ private:
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     evaluate_submaps(current);
+    if (loop_closure_enabled_ && processed_frames_ % loop_check_period_frames_ == 0) {
+      last_loop_closure_ = detect_loop_closure(current);
+      if (last_loop_closure_.accepted &&
+        pose_distance(last_loop_closure_.corrected_pose, world_T_current_) > 0.5)
+      {
+        smooth_frames_remaining_ = smooth_transition_frames_;
+        smooth_target_pose_ = last_loop_closure_.corrected_pose.clone();
+        ++loop_closure_count_;
+      }
+    }
     if (smooth_frames_remaining_ > 0 && !smooth_target_pose_.empty()) {
       smooth_to_pose(smooth_target_pose_);
     }
@@ -1301,6 +1396,12 @@ private:
          << ",\"relative_tx_m\":" << last_relative_translation_[0]
          << ",\"relative_ty_m\":" << last_relative_translation_[1]
          << ",\"relative_tz_m\":" << last_relative_translation_[2]
+         << ",\"loop_closure_accepted\":" << (last_loop_closure_.accepted ? 1 : 0)
+         << ",\"loop_closure_keyframe\":" << last_loop_closure_.keyframe_id
+         << ",\"loop_closure_matches\":" << last_loop_closure_.matches
+         << ",\"loop_closure_inliers\":" << last_loop_closure_.inliers
+         << ",\"loop_closure_rmse_px\":" << json_number(last_loop_closure_.reprojection_rmse)
+         << ",\"loop_closure_count\":" << loop_closure_count_
          << "}";
     status.data = data.str();
     status_publisher_->publish(status);
@@ -1423,6 +1524,12 @@ private:
   int stable_map_min_observations_{};
   int motion_reference_frames_{};
   double motion_reference_translation_m_{};
+  bool loop_closure_enabled_{true};
+  int loop_check_period_frames_{};
+  int loop_min_keyframe_gap_{};
+  int loop_min_matches_{};
+  int loop_min_inliers_{};
+  double loop_max_reprojection_px_{};
   double initial_gazebo_x_{};
   double initial_gazebo_y_{};
   double initial_gazebo_z_{};
@@ -1471,6 +1578,7 @@ private:
   double trajectory_distance_{0.0};
   double committed_distance_{0.0};
   int reference_age_{0};
+  int loop_closure_count_{0};
   int next_keyframe_id_{0};
   int keyframe_count_{0};
   int active_submap_id_{0};
@@ -1488,6 +1596,7 @@ private:
   std::vector<Submap> submaps_;
   std::vector<MapMatch> last_candidates_;
   std::vector<TrajectorySample> trajectory_samples_;
+  LoopClosure last_loop_closure_;
   cv::Ptr<cv::ORB> orb_;
   cv::Ptr<cv::BFMatcher> matcher_;
   std::optional<Frame> previous_;

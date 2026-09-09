@@ -174,6 +174,8 @@ ros2 run visual_slam_gazebo run_experiment_profile.py \
 
 启用地图导出后，每个运行目录会生成 `map_points.csv`、`raw_map_points.csv`、`stable_map_points.csv`、`keyframes.csv` 和 `trajectory_visual.csv`。后三类坐标同时包含初始光学坐标和 Gazebo 对齐坐标；`stable_map_points.csv` 只保留达到最小观测次数的融合点。往返实验摘要同时报告路径长度比例和闭合误差，避免用路线跨度错误评价往返路程。
 
+当前版本增加轻量视觉回环检查：定期将当前帧与早期关键帧进行描述子匹配和 PnP 几何验证，只有达到匹配数、内点数和重投影误差门限才允许平滑位姿修正。回环候选与校正次数会写入状态 JSON；该模块仍只使用双目图像。
+
 ## 当前限制与下一步
 
 现有 30 m 结果表明视觉轨迹长度明显小于仿真真值，说明 VO 仍存在尺度偏差和累计位姿误差，地图点也可能出现离群。当前不进入 IMU 或其他传感器融合；下一步优先修正双目三角化尺度、PnP 位姿方向和 VO 累计更新，再重新评估 45 m 及更长路线下 G/S/P 的算力收益。
