@@ -1295,6 +1295,7 @@ private:
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     evaluate_submaps(current);
+    last_loop_closure_ = LoopClosure{};
     if (loop_closure_enabled_ && processed_frames_ % loop_check_period_frames_ == 0) {
       last_loop_closure_ = detect_loop_closure(current);
       if (last_loop_closure_.accepted &&

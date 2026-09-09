@@ -342,6 +342,8 @@ def summarize(node, mode, run, duration, speed, angular):
         "visual_closure_error_m": visual_closure_error,
         "truth_closure_error_m": truth_closure_error,
         "max_consecutive_tracking_failures": max_consecutive_failures(states),
+        "loop_closure_events": sum(item.get("loop_closure_accepted", 0) == 1 for item in node.statuses),
+        "loop_closure_corrections": last.get("loop_closure_count", 0),
     }
 
 
