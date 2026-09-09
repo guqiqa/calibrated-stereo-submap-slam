@@ -14,7 +14,8 @@ install(
 install(
   PROGRAMS scripts/check_stereo_topics.sh scripts/run_submap_experiment.py
            scripts/analyze_route_segments.py scripts/run_experiment_profile.py
-           scripts/calibrate_sim_speed.py scripts/start_campaign_detached.sh
+           scripts/calibrate_sim_speed.py scripts/plot_map_alignment.py
+           scripts/start_campaign_detached.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -311,7 +311,8 @@ def summarize(node, mode, run, duration, speed, angular):
     truth_closure_error = None
     if len(visual_positions) >= 2:
         visual_closure_error = ((visual_positions[-1][1] - visual_positions[0][1]) ** 2 +
-                                (visual_positions[-1][2] - visual_positions[0][2]) ** 2) ** 0.5
+                                (visual_positions[-1][2] - visual_positions[0][2]) ** 2 +
+                                (visual_positions[-1][3] - visual_positions[0][3]) ** 2) ** 0.5
     if len(node.truth_positions) >= 2:
         truth_closure_error = ((node.truth_positions[-1][1] - node.truth_positions[0][1]) ** 2 +
                                (node.truth_positions[-1][2] - node.truth_positions[0][2]) ** 2) ** 0.5
@@ -399,7 +400,8 @@ def run_one(node, mode, run, args, root):
         node.active = False
         spin_for(node, 1.0)
         expected_distance = abs(args.speed) * args.duration
-        actual_distance = summarize(node, mode, run, args.duration, args.speed, args.angular)["truth_distance_m"]
+        run_summary = summarize(node, mode, run, args.duration, args.speed, args.angular)
+        actual_distance = run_summary["truth_path_distance_m"]
         if expected_distance > 0.0 and actual_distance < expected_distance * 0.5:
             node.get_logger().warning(
                 f"truth motion is short: expected about {expected_distance:.2f} m, "
@@ -422,7 +424,7 @@ def run_one(node, mode, run, args, root):
         (output_dir / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"
         )
-        summary = summarize(node, mode, run, args.duration, args.speed, args.angular)
+        summary = run_summary
         (output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
         )

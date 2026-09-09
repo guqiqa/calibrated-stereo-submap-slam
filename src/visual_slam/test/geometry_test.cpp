@@ -22,5 +22,28 @@ int main()
   const cv::Point3f down = visual_slam::transform_point(transform, cv::Point3f(0.0F, 1.0F, 0.0F));
   assert(std::abs(right.y + 0.965F) < 1e-6F);
   assert(std::abs(down.z + 0.68F) < 1e-6F);
+
+  cv::Mat drifting_pose = cv::Mat::eye(4, 4, CV_64F);
+  drifting_pose.at<double>(0, 0) = 0.96;
+  drifting_pose.at<double>(0, 1) = 0.08;
+  drifting_pose.at<double>(0, 2) = 0.25;
+  drifting_pose.at<double>(1, 0) = -0.10;
+  drifting_pose.at<double>(1, 1) = 0.98;
+  drifting_pose.at<double>(1, 2) = 0.15;
+  drifting_pose.at<double>(2, 0) = -0.24;
+  drifting_pose.at<double>(2, 1) = -0.17;
+  drifting_pose.at<double>(2, 2) = 0.94;
+  drifting_pose.at<double>(0, 3) = 0.4;
+  drifting_pose.at<double>(1, 3) = 1.2;
+  drifting_pose.at<double>(2, 3) = 3.5;
+  const cv::Mat planar = visual_slam::constrain_optical_pose_to_ground_plane(drifting_pose);
+  assert(std::abs(planar.at<double>(1, 3)) < 1e-12);
+  assert(std::abs(planar.at<double>(0, 1)) < 1e-12);
+  assert(std::abs(planar.at<double>(1, 0)) < 1e-12);
+  assert(std::abs(planar.at<double>(1, 1) - 1.0) < 1e-12);
+  assert(std::abs(planar.at<double>(1, 2)) < 1e-12);
+  assert(std::abs(planar.at<double>(2, 1)) < 1e-12);
+  assert(std::abs(planar.at<double>(0, 3) - 0.4) < 1e-12);
+  assert(std::abs(planar.at<double>(2, 3) - 3.5) < 1e-12);
   return 0;
 }

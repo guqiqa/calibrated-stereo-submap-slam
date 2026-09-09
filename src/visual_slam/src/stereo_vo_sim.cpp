@@ -114,6 +114,7 @@ public:
     stable_map_min_observations_ = declare_parameter<int>("stable_map_min_observations", 2);
     motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 5);
     motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
+    planar_motion_constraint_ = declare_parameter<bool>("planar_motion_constraint", true);
     loop_closure_enabled_ = declare_parameter<bool>("loop_closure_enabled", true);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
@@ -1292,6 +1293,9 @@ private:
     // already represents current_T_reference and must not be multiplied by
     // estimates from earlier frames in the same window.
     world_T_current_ = reference_world_pose_ * selected_transform.inv();
+    if (planar_motion_constraint_) {
+      world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
+    }
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     evaluate_submaps(current);
@@ -1308,6 +1312,9 @@ private:
     }
     if (smooth_frames_remaining_ > 0 && !smooth_target_pose_.empty()) {
       smooth_to_pose(smooth_target_pose_);
+      if (planar_motion_constraint_) {
+        world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
+      }
     }
     if (last_keyframe_pose_ && should_insert_keyframe(world_T_current_,
       std::max(inlier_count, rigid_inliers))) {
@@ -1525,6 +1532,7 @@ private:
   int stable_map_min_observations_{};
   int motion_reference_frames_{};
   double motion_reference_translation_m_{};
+  bool planar_motion_constraint_{true};
   bool loop_closure_enabled_{true};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};

@@ -207,7 +207,13 @@ def main():
     command_speed = (profile.get("command_speed_mps", 0.2)
                      if args.speed is None else args.speed)
     duration = profile["duration_s"] if args.duration is None else args.duration
-    reverse_after = profile.get("reverse_after_s") if args.reverse_after is None else args.reverse_after
+    if args.reverse_after is not None:
+        reverse_after = args.reverse_after
+    elif "reverse_after_s" in profile and args.duration is not None:
+        reverse_fraction = profile["reverse_after_s"] / profile["duration_s"]
+        reverse_after = duration * reverse_fraction
+    else:
+        reverse_after = profile.get("reverse_after_s")
     output.mkdir(parents=True, exist_ok=True)
     package_dir = Path(__file__).resolve().parent
     recorder = package_dir / "run_submap_experiment.py"
