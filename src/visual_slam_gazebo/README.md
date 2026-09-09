@@ -202,6 +202,28 @@ ros2 run visual_slam_gazebo stereo_disparity_check
 
 ## 仿真视觉里程计
 
+### 基础建图真实性检查
+
+当前基础建图分支使用连续帧 3D-3D 刚体 RANSAC 作为主要运动估计，PnP 仅在 3D-3D 匹配不足时回退。状态 JSON 增加视差、深度、双目重投影、RANSAC 内点和两种运动估计一致性字段。地图导出使用统一的初始左目光学坐标到 Gazebo world 坐标变换，避免轨迹和地图采用不同的显示坐标。
+
+每个运行目录可获得：
+
+- `raw_map_points.csv`：逐关键帧原始三维点；
+- `stable_map_points.csv`：经过体素融合且达到观测次数门限的点；
+- `keyframes.csv`：关键帧位姿；
+- `trajectory_visual.csv`：视觉轨迹及其 Gazebo 对齐坐标。
+
+基础 45 m 冒烟测试：
+
+```bash
+ros2 run visual_slam_gazebo run_experiment_profile.py \
+  --profile main_45m --modes global --runs 1 --duration 20 \
+  --output-root /mnt/d/科研slam/experiments/basic_map_smoke \
+  --gui --record
+```
+
+`--record` 会为每个运行保存双目图像、CameraInfo、`/sim/odom`、视觉里程计和状态的 rosbag；`--gui` 显式保持 Gazebo 可视化启动，`--no-gui` 可用于无 WSLg 环境。
+
 另开终端启动独立仿真 VO：
 
 ```bash

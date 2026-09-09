@@ -10,6 +10,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import time
@@ -55,6 +56,7 @@ class ExperimentRecorder(Node):
         self.output_dir = Path(output_dir)
         self.speed = speed
         self.angular = angular
+        self.direction = 1.0
         self.active = False
         self.statuses = []
         self.truth_positions = []
@@ -86,11 +88,26 @@ class ExperimentRecorder(Node):
             if file_handle is not None:
                 file_handle.close()
 
+    def write_diagnostics(self):
+        if not self.statuses or self.output_dir is None:
+            return
+        fields = [
+            "host_time", "state", "motion_source", "stereo_points", "valid_matches",
+            "ransac_inliers", "pnp_inliers", "median_disparity_px", "depth_min_m",
+            "depth_median_m", "stereo_reprojection_px", "motion_consistency",
+            "visual_distance_m", "processing_ms", "matching_ms", "active_map_points",
+            "map_points_stable", "tracking_failures",
+        ]
+        with (self.output_dir / "frame_diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(self.statuses)
+
     def publish_command(self):
         message = Twist()
         if self.active:
-            message.linear.x = self.speed
-            message.angular.z = self.angular
+            message.linear.x = self.speed * self.direction
+            message.angular.z = self.angular * self.direction
         self.cmd_publisher.publish(message)
 
     def send_stop(self):
@@ -194,6 +211,25 @@ def start_vo(mode, log_path, map_export_path=None):
     return process, log_handle
 
 
+def start_rosbag(output_dir):
+    bag_dir = output_dir / "rosbag"
+    log_path = output_dir / "rosbag.log"
+    log_handle = log_path.open("w", encoding="utf-8")
+    topics = [
+        "/sim/left/image_raw", "/sim/right/image_raw",
+        "/sim/left/camera_info", "/sim/right/camera_info",
+        "/sim/odom", "/visual_slam/odometry_sim", "/visual_slam/status_sim",
+    ]
+    process = subprocess.Popen(
+        ["ros2", "bag", "record", "-o", str(bag_dir), *topics],
+        stdout=log_handle,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return process, log_handle
+
+
 def dump_parameters(output_dir, process=None, attempts=5):
     """Persist the effective VO parameters while the node is still available."""
     last_result = None
@@ -250,6 +286,7 @@ def summarize(node, mode, run, duration, speed, angular):
     if truth_x:
         truth_distance = ((max(truth_x) - min(truth_x)) ** 2 +
                           (max(truth_y) - min(truth_y)) ** 2) ** 0.5
+    visual_distance = float(last.get("visual_distance_m", 0.0) or 0.0)
     return {
         "mode": mode,
         "run": run,
@@ -269,13 +306,29 @@ def summarize(node, mode, run, duration, speed, angular):
         "truth_start_x": truth_x[0] if truth_x else None,
         "truth_end_x": truth_x[-1] if truth_x else None,
         "truth_distance_m": truth_distance,
+        "visual_distance_m": visual_distance,
+        "visual_truth_distance_ratio": (visual_distance / truth_distance
+                                         if truth_distance > 1e-6 else None),
+        "max_consecutive_tracking_failures": max_consecutive_failures(states),
     }
+
+
+def max_consecutive_failures(states):
+    longest = current = 0
+    for state in states:
+        if state in {"tracking_lost", "insufficient_stereo_features"}:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
 
 
 def run_one(node, mode, run, args, root):
     output_dir = root / mode / f"run_{run:02d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     node.statuses.clear()
+    node.direction = 1.0
     node.output_dir = output_dir
     node.open_files()
     node.reset_simulation()
@@ -292,10 +345,22 @@ def run_one(node, mode, run, args, root):
     node.truth_positions.clear()
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
     process, log_handle = start_vo(mode, output_dir / "stereo_vo_sim.log", map_export_path)
+    bag_process = None
+    bag_log_handle = None
     try:
         spin_for(node, args.warmup)
+        if args.record_bag:
+            bag_process, bag_log_handle = start_rosbag(output_dir)
+            spin_for(node, 1.0)
         node.active = True
-        spin_for(node, args.duration)
+        if args.reverse_after is None:
+            spin_for(node, args.duration)
+        else:
+            if args.reverse_after <= 0.0 or args.reverse_after >= args.duration:
+                raise RuntimeError("reverse-after must be between 0 and duration")
+            spin_for(node, args.reverse_after)
+            node.direction = -1.0
+            spin_for(node, args.duration - args.reverse_after)
         node.active = False
         spin_for(node, 1.0)
         expected_distance = abs(args.speed) * args.duration
@@ -330,9 +395,16 @@ def run_one(node, mode, run, args, root):
     finally:
         node.active = False
         node.send_stop()
+        stop_process(bag_process)
         stop_process(process)
         log_handle.close()
+        if bag_log_handle is not None:
+            bag_log_handle.close()
+        node.write_diagnostics()
         node.close_files()
+        truth_path = output_dir / "sim_odom.csv"
+        if truth_path.exists():
+            shutil.copyfile(truth_path, output_dir / "trajectory_truth.csv")
 
 
 def parse_args():
@@ -347,6 +419,10 @@ def parse_args():
     parser.add_argument("--output", default="experiments/submap")
     parser.add_argument("--export-map", action="store_true",
                         help="export runtime global/submap 3D points to map_points.csv")
+    parser.add_argument("--record-bag", action="store_true",
+                        help="record stereo, truth, odometry and status topics for each run")
+    parser.add_argument("--reverse-after", type=float, default=None,
+                        help="reverse the commanded route after this many seconds")
     return parser.parse_args()
 
 

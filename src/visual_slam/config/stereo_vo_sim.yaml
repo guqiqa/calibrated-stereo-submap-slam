@@ -10,12 +10,23 @@ stereo_vo_sim:
     processing_scale: 0.75
     max_features: 1200
     max_disparity: 160.0
+    min_disparity: 2.0
     stereo_epipolar_tolerance_px: 2.0
     stereo_reprojection_error_px: 1.5
     temporal_match_distance: 52
     min_stereo_points: 35
     min_pnp_inliers: 18
     max_depth_m: 25.0
+    min_3d3d_inliers: 20
+    max_3d3d_residual_m: 0.08
+    motion_translation_tolerance_m: 0.20
+    motion_rotation_tolerance_deg: 8.0
+    stable_map_min_observations: 2
+    motion_reference_frames: 5
+    motion_reference_translation_m: 0.04
+    initial_gazebo_x: 0.08
+    initial_gazebo_y: 0.035
+    initial_gazebo_z: 0.32
     fallback_baseline_m: 0.07
     odom_frame: visual_odom_sim
     camera_frame: stereo_left_optical_frame

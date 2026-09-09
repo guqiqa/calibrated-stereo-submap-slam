@@ -27,6 +27,14 @@ PROFILES = {
         "target_actual_speed_mps": 0.2,
         "output": "experiments/main_45m_gsp",
     },
+    "basic_map_45m_roundtrip": {
+        "route_m": 45.0,
+        "duration_s": 450.0,
+        "reverse_after_s": 225.0,
+        "command_speed_mps": 0.254522061,
+        "target_actual_speed_mps": 0.2,
+        "output": "experiments/basic_map_45m_roundtrip",
+    },
     "highload_60m": {
         "route_m": 60.0,
         "duration_s": 300.0,
@@ -63,6 +71,8 @@ def parse_args():
                         help="Override calibrated command speed")
     parser.add_argument("--duration", type=float, default=None,
                         help="Override profile duration, mainly for smoke tests")
+    parser.add_argument("--reverse-after", type=float, default=None,
+                        help="Override route reversal time for round-trip profiles")
     parser.add_argument("--angular", type=float, default=0.0)
     parser.add_argument("--warmup", type=float, default=3.0)
     parser.add_argument("--output-root", default=None,
@@ -72,6 +82,10 @@ def parse_args():
                         help="Require an already running Gazebo instance")
     parser.add_argument("--no-gui", action="store_true",
                         help="Launch Gazebo without the GUI")
+    parser.add_argument("--gui", action="store_true",
+                        help="Explicitly request the Gazebo GUI (default)")
+    parser.add_argument("--record", action="store_true",
+                        help="Record a rosbag for every mode/run")
     parser.add_argument("--shutdown-gazebo", action="store_true",
                         help="Close Gazebo when this campaign finishes")
     return parser.parse_args()
@@ -193,6 +207,7 @@ def main():
     command_speed = (profile.get("command_speed_mps", 0.2)
                      if args.speed is None else args.speed)
     duration = profile["duration_s"] if args.duration is None else args.duration
+    reverse_after = profile.get("reverse_after_s") if args.reverse_after is None else args.reverse_after
     output.mkdir(parents=True, exist_ok=True)
     package_dir = Path(__file__).resolve().parent
     recorder = package_dir / "run_submap_experiment.py"
@@ -207,10 +222,15 @@ def main():
         "--output", str(output),
         "--export-map",
     ]
+    if reverse_after is not None:
+        command.extend(["--reverse-after", str(reverse_after)])
+    if args.record:
+        command.append("--record-bag")
     metadata = {
         "profile": args.profile,
         "route_m": profile["route_m"],
         "duration_s": duration,
+        "reverse_after_s": reverse_after,
         "modes": args.modes,
         "runs": args.runs,
         "command_speed_mps": command_speed,

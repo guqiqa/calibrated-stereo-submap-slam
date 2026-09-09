@@ -153,6 +153,27 @@ git switch -c fix/vo-scale-and-pose
 
 每次正式实验前冻结代码提交和参数，并在实验记录中保留对应提交哈希。
 
+## 基础建图真实性修复
+
+当前 `fix/metric-stereo-map` 分支先完善纯双目建图，再开展子地图检索实验。VO 内部使用初始左目光学坐标系，地图导出同时提供 Gazebo world 对齐坐标：
+
+```text
+Gazebo X = optical Z + 0.08
+Gazebo Y = -optical X + 0.035
+Gazebo Z = -optical Y + 0.32
+```
+
+视觉运动估计以连续帧 3D-3D 刚体 RANSAC 为主，PnP 作为无可靠 3D-3D 对应时的回退；两者不一致时拒绝更新当前位姿。新增视差、深度、重投影、RANSAC 内点和运动一致性诊断，`/sim/odom` 仍只用于离线评测。
+
+```bash
+ros2 run visual_slam_gazebo run_experiment_profile.py \
+  --profile main_45m --modes global --runs 1 --duration 20 \
+  --output-root /mnt/d/科研slam/experiments/basic_map_smoke \
+  --gui --record
+```
+
+启用地图导出后，每个运行目录会生成 `map_points.csv`、`raw_map_points.csv`、`stable_map_points.csv`、`keyframes.csv` 和 `trajectory_visual.csv`。后三类坐标同时包含初始光学坐标和 Gazebo 对齐坐标；`stable_map_points.csv` 只保留达到最小观测次数的融合点。
+
 ## 当前限制与下一步
 
 现有 30 m 结果表明视觉轨迹长度明显小于仿真真值，说明 VO 仍存在尺度偏差和累计位姿误差，地图点也可能出现离群。当前不进入 IMU 或其他传感器融合；下一步优先修正双目三角化尺度、PnP 位姿方向和 VO 累计更新，再重新评估 45 m 及更长路线下 G/S/P 的算力收益。

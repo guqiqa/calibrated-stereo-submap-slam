@@ -8,7 +8,9 @@
 #include <limits>
 #include <memory>
 #include <map>
+#include <filesystem>
 #include <optional>
+#include <random>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -20,6 +22,9 @@
 #include <opencv2/core.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/video/tracking.hpp>
+
+#include "visual_slam/geometry.hpp"
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -95,12 +100,23 @@ public:
     processing_scale_ = declare_parameter<double>("processing_scale", 0.75);
     max_features_ = declare_parameter<int>("max_features", 1200);
     max_disparity_ = declare_parameter<double>("max_disparity", 160.0);
+    min_disparity_ = declare_parameter<double>("min_disparity", 2.0);
     stereo_epipolar_tolerance_px_ = declare_parameter<double>("stereo_epipolar_tolerance_px", 2.0);
     stereo_reprojection_error_px_ = declare_parameter<double>("stereo_reprojection_error_px", 1.5);
     temporal_match_distance_ = declare_parameter<int>("temporal_match_distance", 52);
     min_stereo_points_ = declare_parameter<int>("min_stereo_points", 35);
     min_pnp_inliers_ = declare_parameter<int>("min_pnp_inliers", 18);
     max_depth_m_ = declare_parameter<double>("max_depth_m", 25.0);
+    min_3d3d_inliers_ = declare_parameter<int>("min_3d3d_inliers", 20);
+    max_3d3d_residual_m_ = declare_parameter<double>("max_3d3d_residual_m", 0.08);
+    motion_translation_tolerance_m_ = declare_parameter<double>("motion_translation_tolerance_m", 0.20);
+    motion_rotation_tolerance_deg_ = declare_parameter<double>("motion_rotation_tolerance_deg", 8.0);
+    stable_map_min_observations_ = declare_parameter<int>("stable_map_min_observations", 2);
+    motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 5);
+    motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
+    initial_gazebo_x_ = declare_parameter<double>("initial_gazebo_x", 0.08);
+    initial_gazebo_y_ = declare_parameter<double>("initial_gazebo_y", 0.035);
+    initial_gazebo_z_ = declare_parameter<double>("initial_gazebo_z", 0.32);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "visual_odom_sim");
     camera_frame_ = declare_parameter<std::string>("camera_frame", "stereo_left_optical_frame");
     submap_mode_ = declare_parameter<std::string>("submap_mode", "joint");
@@ -118,6 +134,8 @@ public:
     smooth_transition_frames_ = declare_parameter<int>("smooth_transition_frames", 5);
     map_fusion_radius_m_ = declare_parameter<double>("map_fusion_radius_m", 0.10);
     map_export_path_ = declare_parameter<std::string>("map_export_path", "");
+    gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
+      initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_);
 
     if (processing_scale_ < 0.25 || processing_scale_ > 1.0) {
       throw std::runtime_error("processing_scale must be within [0.25, 1.0]");
@@ -136,6 +154,13 @@ public:
     }
     if (map_fusion_radius_m_ <= 0.0) {
       throw std::runtime_error("map_fusion_radius_m must be positive");
+    }
+    if (min_disparity_ <= 0.0 || min_3d3d_inliers_ < 3 || max_3d3d_residual_m_ <= 0.0 ||
+      motion_translation_tolerance_m_ <= 0.0 || motion_rotation_tolerance_deg_ <= 0.0 ||
+      stable_map_min_observations_ < 1 || motion_reference_frames_ < 2 ||
+      motion_reference_translation_m_ <= 0.0)
+    {
+      throw std::runtime_error("invalid stereo geometry quality parameters");
     }
     orb_ = cv::ORB::create(max_features_);
     matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, false);
@@ -175,9 +200,20 @@ public:
 private:
   struct Frame
   {
+    cv::Mat left_image;
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     std::vector<cv::Point3f> points3d;
+    double median_disparity{0.0};
+    double min_depth{0.0};
+    double median_depth{0.0};
+    double stereo_reprojection_rmse{0.0};
+  };
+
+  struct TrajectorySample
+  {
+    double stamp{0.0};
+    cv::Mat pose;
   };
 
   struct Keyframe
@@ -279,6 +315,9 @@ private:
     calibration_ready_ = true;
     previous_.reset();
     world_T_current_ = cv::Mat::eye(4, 4, CV_64F);
+    reference_world_pose_ = world_T_current_.clone();
+    reference_age_ = 0;
+    committed_distance_ = 0.0;
     RCLCPP_INFO(get_logger(), "camera info ready: %dx%d -> %dx%d, fx=%.2f px, baseline=%.3f m",
       width, height, processing_size_.width, processing_size_.height, rectified_k_.at<double>(0, 0), baseline);
     publish_status("camera_info_ready", 0, 0, 0, 0.0, 0.0);
@@ -326,6 +365,129 @@ private:
     rotation.copyTo(camera_T_world(cv::Rect(0, 0, 3, 3)));
     translation.copyTo(camera_T_world(cv::Rect(3, 0, 1, 3)));
     return camera_T_world.inv();
+  }
+
+  static double rotation_difference_deg(const cv::Mat & lhs, const cv::Mat & rhs)
+  {
+    const cv::Mat lhs_rotation = lhs(cv::Rect(0, 0, 3, 3));
+    const cv::Mat rhs_rotation = rhs(cv::Rect(0, 0, 3, 3));
+    cv::Mat vector;
+    cv::Rodrigues(lhs_rotation * rhs_rotation.t(), vector);
+    return cv::norm(vector) * 180.0 / CV_PI;
+  }
+
+  static double json_number(double value)
+  {
+    return std::isfinite(value) ? value : -1.0;
+  }
+
+  static bool rigid_transform(const std::vector<cv::Point3f> & source,
+    const std::vector<cv::Point3f> & target, const std::vector<int> & indices, cv::Mat & transform)
+  {
+    if (indices.size() < 3U) {
+      return false;
+    }
+    cv::Vec3d source_center(0.0, 0.0, 0.0);
+    cv::Vec3d target_center(0.0, 0.0, 0.0);
+    for (const int index : indices) {
+      source_center += cv::Vec3d(source[index].x, source[index].y, source[index].z);
+      target_center += cv::Vec3d(target[index].x, target[index].y, target[index].z);
+    }
+    source_center *= 1.0 / static_cast<double>(indices.size());
+    target_center *= 1.0 / static_cast<double>(indices.size());
+    cv::Mat covariance = cv::Mat::zeros(3, 3, CV_64F);
+    for (const int index : indices) {
+      const cv::Vec3d src(source[index].x - source_center[0], source[index].y - source_center[1],
+        source[index].z - source_center[2]);
+      const cv::Vec3d dst(target[index].x - target_center[0], target[index].y - target_center[1],
+        target[index].z - target_center[2]);
+      for (int row = 0; row < 3; ++row) {
+        for (int col = 0; col < 3; ++col) {
+          covariance.at<double>(row, col) += dst[row] * src[col];
+        }
+      }
+    }
+    cv::Mat u, singular_values, vt;
+    cv::SVD::compute(covariance, singular_values, u, vt);
+    cv::Mat rotation = u * vt;
+    if (cv::determinant(rotation) < 0.0) {
+      u.col(2) *= -1.0;
+      rotation = u * vt;
+    }
+    if (!std::isfinite(cv::determinant(rotation))) {
+      return false;
+    }
+    cv::Mat source_center_mat = (cv::Mat_<double>(3, 1) << source_center[0], source_center[1], source_center[2]);
+    cv::Mat target_center_mat = (cv::Mat_<double>(3, 1) << target_center[0], target_center[1], target_center[2]);
+    cv::Mat translation = target_center_mat - rotation * source_center_mat;
+    transform = cv::Mat::eye(4, 4, CV_64F);
+    rotation.copyTo(transform(cv::Rect(0, 0, 3, 3)));
+    translation.copyTo(transform(cv::Rect(3, 0, 1, 3)));
+    return true;
+  }
+
+  bool estimate_3d3d_ransac(const std::vector<cv::Point3f> & source,
+    const std::vector<cv::Point3f> & target, cv::Mat & transform, int & inliers, double & rmse) const
+  {
+    inliers = 0;
+    rmse = std::numeric_limits<double>::infinity();
+    if (source.size() != target.size() || source.size() < 6U) {
+      return false;
+    }
+    std::mt19937 generator(1337U + static_cast<unsigned int>(processed_frames_));
+    std::uniform_int_distribution<int> distribution(0, static_cast<int>(source.size()) - 1);
+    std::vector<int> best_indices;
+    cv::Mat best_transform;
+    for (int iteration = 0; iteration < 100; ++iteration) {
+      std::set<int> sample_set;
+      while (sample_set.size() < 3U) {
+        sample_set.insert(distribution(generator));
+      }
+      std::vector<int> sample(sample_set.begin(), sample_set.end());
+      cv::Mat candidate;
+      if (!rigid_transform(source, target, sample, candidate)) {
+        continue;
+      }
+      std::vector<int> current_indices;
+      double squared_error = 0.0;
+      for (std::size_t i = 0; i < source.size(); ++i) {
+        const cv::Point3f predicted = transform_point(candidate, source[i]);
+        const double error = std::sqrt(
+          std::pow(predicted.x - target[i].x, 2.0) +
+          std::pow(predicted.y - target[i].y, 2.0) +
+          std::pow(predicted.z - target[i].z, 2.0));
+        if (error <= max_3d3d_residual_m_) {
+          current_indices.push_back(static_cast<int>(i));
+          squared_error += error * error;
+        }
+      }
+      if (current_indices.size() > best_indices.size() ||
+        (current_indices.size() == best_indices.size() && squared_error < rmse * rmse * current_indices.size()))
+      {
+        best_indices = std::move(current_indices);
+        best_transform = candidate;
+        rmse = best_indices.empty() ? std::numeric_limits<double>::infinity() :
+          std::sqrt(squared_error / static_cast<double>(best_indices.size()));
+      }
+    }
+    if (best_indices.size() < static_cast<std::size_t>(min_3d3d_inliers_)) {
+      return false;
+    }
+    if (!rigid_transform(source, target, best_indices, transform)) {
+      transform = best_transform;
+    }
+    double squared_error = 0.0;
+    for (const int index : best_indices) {
+      const cv::Point3f predicted = transform_point(transform, source[index]);
+      const double error = std::sqrt(
+        std::pow(predicted.x - target[index].x, 2.0) +
+        std::pow(predicted.y - target[index].y, 2.0) +
+        std::pow(predicted.z - target[index].z, 2.0));
+      squared_error += error * error;
+    }
+    inliers = static_cast<int>(best_indices.size());
+    rmse = std::sqrt(squared_error / static_cast<double>(best_indices.size()));
+    return true;
   }
 
   void ensure_submaps_for_distance(double distance)
@@ -410,6 +572,7 @@ private:
     keyframe.distance = distance;
     keyframe.world_pose = world_pose.clone();
     keyframe.frame = frame;
+    keyframe.frame.left_image.release();
     keyframes_[keyframe.id] = keyframe;
     append_frame_to_map(global_map_, keyframe);
     for (auto & submap : submaps_) {
@@ -717,6 +880,17 @@ private:
     return count;
   }
 
+  int stable_map_point_count() const
+  {
+    int count = 0;
+    for (std::size_t i = 0; i < global_map_.fused_map_points.size(); ++i) {
+      if (global_map_.fused_map_observations[i] >= stable_map_min_observations_) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
   static cv::Mat image_to_mono8(const sensor_msgs::msg::Image & image)
   {
     int channels = 1;
@@ -800,6 +974,7 @@ private:
     orb_->detectAndCompute(left_rectified, cv::noArray(), left_keypoints, left_descriptors);
     orb_->detectAndCompute(right_rectified, cv::noArray(), right_keypoints, right_descriptors);
     Frame frame;
+    frame.left_image = left_rectified;
     if (left_descriptors.empty() || right_descriptors.empty()) {
       return frame;
     }
@@ -817,7 +992,7 @@ private:
       const auto & right_keypoint = right_keypoints[candidate[0].trainIdx];
       const double disparity = left_keypoint.pt.x - right_keypoint.pt.x;
       if (std::abs(left_keypoint.pt.y - right_keypoint.pt.y) > stereo_epipolar_tolerance_px_ ||
-        disparity < 1.0 || disparity > max_disparity_) {
+        disparity < min_disparity_ || disparity > max_disparity_) {
         continue;
       }
       if (!used_right_indices.insert(candidate[0].trainIdx).second) {
@@ -834,6 +1009,9 @@ private:
     cv::triangulatePoints(p1_, p2_, matched_left, matched_right, homogeneous);
     cv::Mat homogeneous64;
     homogeneous.convertTo(homogeneous64, CV_64F);
+    std::vector<double> accepted_disparities;
+    std::vector<double> accepted_depths;
+    double squared_reprojection_error = 0.0;
     for (int column = 0; column < homogeneous64.cols; ++column) {
       const double w = homogeneous64.at<double>(3, column);
       if (std::abs(w) < 1e-9) {
@@ -865,13 +1043,27 @@ private:
         };
       const cv::Point2f measured_left = matched_left[column];
       const cv::Point2f measured_right = matched_right[column];
-      if (reprojection_error(p1_, point, measured_left) > stereo_reprojection_error_px_ ||
-        reprojection_error(p2_, point, measured_right) > stereo_reprojection_error_px_) {
+      const double left_error = reprojection_error(p1_, point, measured_left);
+      const double right_error = reprojection_error(p2_, point, measured_right);
+      if (left_error > stereo_reprojection_error_px_ || right_error > stereo_reprojection_error_px_) {
         continue;
       }
       frame.keypoints.push_back(left_keypoints[source_indices[column]]);
       frame.points3d.push_back(point);
       frame.descriptors.push_back(left_descriptors.row(source_indices[column]));
+      accepted_disparities.push_back(static_cast<double>(measured_left.x - measured_right.x));
+      accepted_depths.push_back(static_cast<double>(point.z));
+      squared_reprojection_error += left_error * left_error + right_error * right_error;
+    }
+    if (!accepted_depths.empty()) {
+      std::sort(accepted_disparities.begin(), accepted_disparities.end());
+      std::sort(accepted_depths.begin(), accepted_depths.end());
+      const std::size_t middle = accepted_depths.size() / 2U;
+      frame.median_disparity = accepted_disparities[middle];
+      frame.min_depth = accepted_depths.front();
+      frame.median_depth = accepted_depths[middle];
+      frame.stereo_reprojection_rmse = std::sqrt(
+        squared_reprojection_error / (2.0 * static_cast<double>(accepted_depths.size())));
     }
     return frame;
   }
@@ -880,8 +1072,13 @@ private:
     double pair_delta_ms)
   {
     const auto started = std::chrono::steady_clock::now();
+    ++processed_frames_;
     Frame current = make_stereo_frame(left, right);
     const int stereo_points = static_cast<int>(current.points3d.size());
+    last_frame_median_disparity_ = current.median_disparity;
+    last_frame_min_depth_ = current.min_depth;
+    last_frame_median_depth_ = current.median_depth;
+    last_frame_reprojection_rmse_ = current.stereo_reprojection_rmse;
     if (stereo_points < min_stereo_points_) {
       ++tracking_failures_;
       publish_status("insufficient_stereo_features", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
@@ -889,22 +1086,59 @@ private:
     }
     if (!previous_) {
       previous_ = std::move(current);
+      reference_world_pose_ = world_T_current_.clone();
+      reference_age_ = 0;
       insert_keyframe(*previous_, world_T_current_, trajectory_distance_);
+      trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9, world_T_current_.clone()});
       update_loaded_submaps();
       publish_status("initialized", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
       return;
     }
-    std::vector<std::vector<cv::DMatch>> temporal_candidates;
-    matcher_->knnMatch(previous_->descriptors, current.descriptors, temporal_candidates, 2);
     std::vector<cv::Point3f> object_points;
     std::vector<cv::Point2f> image_points;
-    for (const auto & candidate : temporal_candidates) {
-      if (candidate.size() != 2 || candidate[0].distance >= 0.78F * candidate[1].distance ||
-        candidate[0].distance > temporal_match_distance_) {
+    std::vector<cv::Point3f> current_points3d;
+    std::set<int> used_current_indices;
+    std::vector<cv::Point2f> previous_pixels;
+    previous_pixels.reserve(previous_->keypoints.size());
+    for (const auto & keypoint : previous_->keypoints) {
+      previous_pixels.push_back(keypoint.pt);
+    }
+    std::vector<cv::Point2f> tracked_pixels;
+    std::vector<cv::Point2f> backward_pixels;
+    std::vector<unsigned char> forward_status;
+    std::vector<unsigned char> backward_status;
+    std::vector<float> forward_error;
+    std::vector<float> backward_error;
+    cv::calcOpticalFlowPyrLK(previous_->left_image, current.left_image, previous_pixels,
+      tracked_pixels, forward_status, forward_error, cv::Size(21, 21), 3,
+      cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01));
+    cv::calcOpticalFlowPyrLK(current.left_image, previous_->left_image, tracked_pixels,
+      backward_pixels, backward_status, backward_error, cv::Size(21, 21), 3,
+      cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01));
+    for (std::size_t index = 0; index < previous_pixels.size(); ++index) {
+      if (!forward_status[index] || !backward_status[index] ||
+        cv::norm(previous_pixels[index] - backward_pixels[index]) > 1.0 ||
+        tracked_pixels[index].x < 1.0F || tracked_pixels[index].y < 1.0F ||
+        tracked_pixels[index].x >= current.left_image.cols - 1.0F ||
+        tracked_pixels[index].y >= current.left_image.rows - 1.0F)
+      {
         continue;
       }
-      object_points.push_back(previous_->points3d[candidate[0].queryIdx]);
-      image_points.push_back(current.keypoints[candidate[0].trainIdx].pt);
+      int nearest_index = -1;
+      double nearest_distance = 2.0;
+      for (std::size_t current_index = 0; current_index < current.keypoints.size(); ++current_index) {
+        const double distance = cv::norm(current.keypoints[current_index].pt - tracked_pixels[index]);
+        if (distance < nearest_distance) {
+          nearest_distance = distance;
+          nearest_index = static_cast<int>(current_index);
+        }
+      }
+      if (nearest_index < 0 || !used_current_indices.insert(nearest_index).second) {
+        continue;
+      }
+      object_points.push_back(previous_->points3d[index]);
+      image_points.push_back(tracked_pixels[index]);
+      current_points3d.push_back(current.points3d[nearest_index]);
     }
     cv::Mat rotation_vector;
     cv::Mat translation_vector;
@@ -913,31 +1147,88 @@ private:
       object_points, image_points, rectified_k_, cv::Mat(), rotation_vector, translation_vector, false,
       100, 2.0, 0.99, inliers, cv::SOLVEPNP_ITERATIVE);
     const int inlier_count = pnp_ok ? inliers.rows : 0;
-    if (!pnp_ok || inlier_count < min_pnp_inliers_) {
+    cv::Mat pnp_transform;
+    if (pnp_ok) {
+      cv::Mat rotation_matrix;
+      cv::Rodrigues(rotation_vector, rotation_matrix);
+      pnp_transform = cv::Mat::eye(4, 4, CV_64F);
+      rotation_matrix.copyTo(pnp_transform(cv::Rect(0, 0, 3, 3)));
+      translation_vector.copyTo(pnp_transform(cv::Rect(3, 0, 1, 3)));
+    }
+    cv::Mat rigid_transform_estimate;
+    int rigid_inliers = 0;
+    double rigid_rmse = std::numeric_limits<double>::infinity();
+    const bool rigid_ok = estimate_3d3d_ransac(
+      object_points, current_points3d, rigid_transform_estimate, rigid_inliers, rigid_rmse);
+    double motion_translation_difference = std::numeric_limits<double>::infinity();
+    double motion_rotation_difference = std::numeric_limits<double>::infinity();
+    bool motion_consistent = true;
+    if (pnp_ok && rigid_ok) {
+      motion_translation_difference = cv::norm(
+        pnp_transform(cv::Rect(3, 0, 1, 3)) - rigid_transform_estimate(cv::Rect(3, 0, 1, 3)));
+      motion_rotation_difference = rotation_difference_deg(pnp_transform, rigid_transform_estimate);
+      motion_consistent = motion_translation_difference <= motion_translation_tolerance_m_ &&
+        motion_rotation_difference <= motion_rotation_tolerance_deg_;
+    }
+    last_rigid_inliers_ = rigid_inliers;
+    last_rigid_rmse_ = rigid_rmse;
+    last_motion_translation_difference_ = motion_translation_difference;
+    last_motion_rotation_difference_ = motion_rotation_difference;
+    last_motion_consistency_ = motion_consistent ? 1.0 : 0.0;
+    cv::Mat selected_transform;
+    const double rigid_translation = rigid_ok ? pose_translation(rigid_transform_estimate) : 0.0;
+    const double pnp_translation = pnp_ok ? pose_translation(pnp_transform) : 0.0;
+    const bool rigid_quantized = rigid_ok && pnp_ok && pnp_translation > 0.003 &&
+      rigid_translation < 0.25 * pnp_translation;
+    if (pnp_ok && inlier_count >= min_pnp_inliers_ && motion_consistent) {
+      // LK-PnP retains sub-pixel image motion in distant corridor views.
+      // Stereo 3D-3D remains an independent metric consistency check.
+      selected_transform = pnp_transform;
+      motion_source_ = rigid_quantized ? "pnp_quantized_3d3d" : "pnp_stereo_consistent";
+    } else if (rigid_ok && !pnp_ok) {
+      selected_transform = rigid_transform_estimate;
+      motion_source_ = "stereo_3d3d_fallback";
+    } else if (pnp_ok && inlier_count >= min_pnp_inliers_ && (!rigid_ok || rigid_quantized)) {
+      selected_transform = pnp_transform;
+      motion_source_ = rigid_quantized ? "pnp_quantized_3d3d" : "pnp_fallback";
+    } else if (rigid_ok && pnp_ok && !motion_consistent) {
+      motion_source_ = "inconsistent_motion";
+    }
+    if (selected_transform.empty()) {
       ++tracking_failures_;
-      previous_ = std::move(current);
       publish_status("tracking_lost", stereo_points, static_cast<int>(object_points.size()), inlier_count,
         pair_delta_ms, elapsed_ms(started));
       return;
     }
-    cv::Mat rotation_matrix;
-    cv::Rodrigues(rotation_vector, rotation_matrix);
-    cv::Mat current_T_previous = cv::Mat::eye(4, 4, CV_64F);
-    rotation_matrix.copyTo(current_T_previous(cv::Rect(0, 0, 3, 3)));
-    translation_vector.copyTo(current_T_previous(cv::Rect(3, 0, 1, 3)));
-    world_T_current_ = world_T_current_ * current_T_previous.inv();
-    trajectory_distance_ += pose_translation(current_T_previous);
+    last_relative_translation_[0] = selected_transform.at<double>(0, 3);
+    last_relative_translation_[1] = selected_transform.at<double>(1, 3);
+    last_relative_translation_[2] = selected_transform.at<double>(2, 3);
+    // previous_ is held for a short reference window, so selected_transform
+    // already represents current_T_reference and must not be multiplied by
+    // estimates from earlier frames in the same window.
+    world_T_current_ = reference_world_pose_ * selected_transform.inv();
+    trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     evaluate_submaps(current);
     if (smooth_frames_remaining_ > 0 && !smooth_target_pose_.empty()) {
       smooth_to_pose(smooth_target_pose_);
     }
-    if (last_keyframe_pose_ && should_insert_keyframe(world_T_current_, inlier_count)) {
+    if (last_keyframe_pose_ && should_insert_keyframe(world_T_current_,
+      std::max(inlier_count, rigid_inliers))) {
       insert_keyframe(current, world_T_current_, trajectory_distance_);
       update_loaded_submaps();
     }
-    previous_ = std::move(current);
+    ++reference_age_;
+    if (reference_age_ >= motion_reference_frames_ ||
+      pose_translation(selected_transform) >= motion_reference_translation_m_)
+    {
+      committed_distance_ = trajectory_distance_;
+      reference_world_pose_ = world_T_current_.clone();
+      previous_ = std::move(current);
+      reference_age_ = 0;
+    }
     ++tracked_pairs_;
+    trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9, world_T_current_.clone()});
     publish_odometry(stamp, inlier_count);
     publish_status("tracking", stereo_points, static_cast<int>(object_points.size()), inlier_count,
       pair_delta_ms, elapsed_ms(started));
@@ -992,7 +1283,25 @@ private:
          << ",\"keyframes\":" << keyframe_count_
          << ",\"submaps\":" << submaps_.size()
          << ",\"switch_count\":" << switch_count_
-         << ",\"wrong_switch_count\":" << wrong_switch_count_ << "}";
+         << ",\"wrong_switch_count\":" << wrong_switch_count_
+         << ",\"motion_source\":\"" << motion_source_ << "\""
+         << ",\"valid_matches\":" << temporal_matches
+         << ",\"ransac_inliers\":" << last_rigid_inliers_
+         << ",\"median_disparity_px\":" << last_frame_median_disparity_
+         << ",\"depth_min_m\":" << last_frame_min_depth_
+         << ",\"depth_median_m\":" << last_frame_median_depth_
+         << ",\"stereo_reprojection_px\":" << last_frame_reprojection_rmse_
+         << ",\"motion_consistency\":" << last_motion_consistency_
+         << ",\"visual_distance_m\":" << trajectory_distance_
+         << ",\"map_points_raw\":" << static_cast<int>(global_map_.map_points.size())
+         << ",\"map_points_stable\":" << stable_map_point_count()
+         << ",\"rigid_rmse_m\":" << json_number(last_rigid_rmse_)
+         << ",\"motion_translation_difference_m\":" << json_number(last_motion_translation_difference_)
+         << ",\"motion_rotation_difference_deg\":" << json_number(last_motion_rotation_difference_)
+         << ",\"relative_tx_m\":" << last_relative_translation_[0]
+         << ",\"relative_ty_m\":" << last_relative_translation_[1]
+         << ",\"relative_tz_m\":" << last_relative_translation_[2]
+         << "}";
     status.data = data.str();
     status_publisher_->publish(status);
   }
@@ -1002,14 +1311,35 @@ private:
     if (map_export_path_.empty()) {
       return;
     }
-    std::ofstream output(map_export_path_);
-    if (!output) {
+    const std::filesystem::path requested_path(map_export_path_);
+    const std::filesystem::path output_dir = requested_path.parent_path().empty() ?
+      std::filesystem::current_path() : requested_path.parent_path();
+    std::error_code error;
+    std::filesystem::create_directories(output_dir, error);
+    std::ofstream combined(requested_path);
+    std::ofstream raw(output_dir / "raw_map_points.csv");
+    std::ofstream stable(output_dir / "stable_map_points.csv");
+    std::ofstream keyframes(output_dir / "keyframes.csv");
+    std::ofstream trajectory(output_dir / "trajectory_visual.csv");
+    if (!combined || !raw || !stable || !keyframes || !trajectory) {
       RCLCPP_WARN(const_cast<StereoVoSim *>(this)->get_logger(),
-        "cannot open map export path: %s", map_export_path_.c_str());
+        "cannot open map export files in: %s", output_dir.string().c_str());
       return;
     }
-    output << "scope,submap_id,keyframe_id,x,y,z,observations\n";
-    const auto write_submap = [&output](const Submap & submap, const char * scope) {
+    const char * header =
+      "scope,submap_id,keyframe_id,point_id,x_optical,y_optical,z_optical,x_gazebo,y_gazebo,z_gazebo,observations,stable\n";
+    combined << header;
+    raw << header;
+    stable << header;
+    const auto write_point = [this](std::ostream & output, const char * scope, int submap_id,
+      int keyframe_id, int point_id, const cv::Point3f & point, int observations, bool is_stable) {
+      const cv::Point3f gazebo_point = visual_slam::transform_point(gazebo_T_map_, point);
+      output << scope << ',' << submap_id << ',' << keyframe_id << ',' << point_id << ','
+             << point.x << ',' << point.y << ',' << point.z << ','
+             << gazebo_point.x << ',' << gazebo_point.y << ',' << gazebo_point.z << ','
+             << observations << ',' << (is_stable ? 1 : 0) << '\n';
+    };
+    const auto write_submap = [&write_point](std::ostream & output, const Submap & submap, const char * scope) {
       std::size_t point_index = 0;
       for (std::size_t keyframe_index = 0; keyframe_index < submap.keyframe_ids.size(); ++keyframe_index) {
         const int keyframe_id = submap.keyframe_ids[keyframe_index];
@@ -1017,29 +1347,53 @@ private:
           submap.map_point_counts[keyframe_index] : 0;
         for (int i = 0; i < point_count && point_index < submap.map_points.size(); ++i) {
           const auto & point = submap.map_points[point_index++];
-          output << scope << ',' << submap.id << ',' << keyframe_id << ','
-                 << point.x << ',' << point.y << ',' << point.z << ",1\n";
+          write_point(output, scope, submap.id, keyframe_id, static_cast<int>(point_index - 1), point, 1, false);
         }
       }
     };
-    const auto write_fused = [&output](const Submap & submap, const char * scope,
+    const auto write_fused = [&write_point](std::ostream & output, const Submap & submap, const char * scope,
       int minimum_observations) {
       for (std::size_t i = 0; i < submap.fused_map_points.size(); ++i) {
         if (submap.fused_map_observations[i] < minimum_observations) {
           continue;
         }
         const auto & point = submap.fused_map_points[i];
-        output << scope << ',' << submap.id << ",-1," << point.x << ',' << point.y << ',' << point.z << ','
-               << submap.fused_map_observations[i] << '\n';
+        write_point(output, scope, submap.id, -1, static_cast<int>(i), point,
+          submap.fused_map_observations[i], minimum_observations > 1);
       }
     };
-    write_submap(global_map_, "global");
-    write_fused(global_map_, "global_fused", 1);
-    write_fused(global_map_, "global_stable", 2);
+    write_submap(combined, global_map_, "global");
+    write_fused(combined, global_map_, "global_fused", 1);
+    write_fused(combined, global_map_, "global_stable", stable_map_min_observations_);
+    write_submap(raw, global_map_, "global");
+    write_fused(stable, global_map_, "global_stable", stable_map_min_observations_);
     for (const auto & submap : submaps_) {
-      write_submap(submap, "submap");
-      write_fused(submap, "submap_fused", 1);
-      write_fused(submap, "submap_stable", 2);
+      write_submap(combined, submap, "submap");
+      write_fused(combined, submap, "submap_fused", 1);
+      write_fused(combined, submap, "submap_stable", stable_map_min_observations_);
+      write_submap(raw, submap, "submap");
+      write_fused(stable, submap, "submap_stable", stable_map_min_observations_);
+    }
+    keyframes << "id,distance,x_optical,y_optical,z_optical,x_gazebo,y_gazebo,z_gazebo\n";
+    for (const auto & entry : keyframes_) {
+      const Keyframe & keyframe = entry.second;
+      const cv::Point3f optical(
+        static_cast<float>(keyframe.world_pose.at<double>(0, 3)),
+        static_cast<float>(keyframe.world_pose.at<double>(1, 3)),
+        static_cast<float>(keyframe.world_pose.at<double>(2, 3)));
+      const cv::Point3f gazebo = visual_slam::transform_point(gazebo_T_map_, optical);
+      keyframes << keyframe.id << ',' << keyframe.distance << ',' << optical.x << ',' << optical.y << ',' << optical.z
+                << ',' << gazebo.x << ',' << gazebo.y << ',' << gazebo.z << '\n';
+    }
+    trajectory << "stamp,x_optical,y_optical,z_optical,x_gazebo,y_gazebo,z_gazebo\n";
+    for (const auto & sample : trajectory_samples_) {
+      const cv::Point3f optical(
+        static_cast<float>(sample.pose.at<double>(0, 3)),
+        static_cast<float>(sample.pose.at<double>(1, 3)),
+        static_cast<float>(sample.pose.at<double>(2, 3)));
+      const cv::Point3f gazebo = visual_slam::transform_point(gazebo_T_map_, optical);
+      trajectory << sample.stamp << ',' << optical.x << ',' << optical.y << ',' << optical.z
+                 << ',' << gazebo.x << ',' << gazebo.y << ',' << gazebo.z << '\n';
     }
   }
 
@@ -1061,6 +1415,17 @@ private:
   int min_stereo_points_{};
   int min_pnp_inliers_{};
   double max_depth_m_{};
+  double min_disparity_{};
+  int min_3d3d_inliers_{};
+  double max_3d3d_residual_m_{};
+  double motion_translation_tolerance_m_{};
+  double motion_rotation_tolerance_deg_{};
+  int stable_map_min_observations_{};
+  int motion_reference_frames_{};
+  double motion_reference_translation_m_{};
+  double initial_gazebo_x_{};
+  double initial_gazebo_y_{};
+  double initial_gazebo_z_{};
   double fallback_baseline_m_{0.07};
   std::string submap_mode_;
   double submap_length_m_{};
@@ -1082,6 +1447,18 @@ private:
   int rejected_pairs_{0};
   int tracking_failures_{0};
   int tracked_pairs_{0};
+  int processed_frames_{0};
+  int last_rigid_inliers_{0};
+  double last_rigid_rmse_{std::numeric_limits<double>::infinity()};
+  double last_motion_translation_difference_{std::numeric_limits<double>::infinity()};
+  double last_motion_rotation_difference_{std::numeric_limits<double>::infinity()};
+  double last_motion_consistency_{0.0};
+  double last_frame_median_disparity_{0.0};
+  double last_frame_min_depth_{0.0};
+  double last_frame_median_depth_{0.0};
+  double last_frame_reprojection_rmse_{0.0};
+  std::array<double, 3> last_relative_translation_{0.0, 0.0, 0.0};
+  std::string motion_source_{"none"};
   std::optional<sensor_msgs::msg::CameraInfo> left_info_;
   std::optional<sensor_msgs::msg::CameraInfo> right_info_;
   cv::Mat k1_, k2_, d1_, d2_, r1_, r2_, p1_, p2_, q_, rectified_k_;
@@ -1089,7 +1466,11 @@ private:
   cv::Size native_size_;
   cv::Size processing_size_;
   cv::Mat world_T_current_;
+  cv::Mat gazebo_T_map_;
+  cv::Mat reference_world_pose_;
   double trajectory_distance_{0.0};
+  double committed_distance_{0.0};
+  int reference_age_{0};
   int next_keyframe_id_{0};
   int keyframe_count_{0};
   int active_submap_id_{0};
@@ -1106,6 +1487,7 @@ private:
   std::map<int, Keyframe> keyframes_;
   std::vector<Submap> submaps_;
   std::vector<MapMatch> last_candidates_;
+  std::vector<TrajectorySample> trajectory_samples_;
   cv::Ptr<cv::ORB> orb_;
   cv::Ptr<cv::BFMatcher> matcher_;
   std::optional<Frame> previous_;

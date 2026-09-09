@@ -18,6 +18,13 @@ __pycache__/
 /experiments/**/visual_odom.csv
 /experiments/**/sim_odom.csv
 /experiments/**/map_points.csv
+/experiments/**/raw_map_points.csv
+/experiments/**/stable_map_points.csv
+/experiments/**/keyframes.csv
+/experiments/**/trajectory_visual.csv
+/experiments/**/trajectory_truth.csv
+/experiments/**/frame_diagnostics.csv
+/experiments/**/rosbag/
 /experiments/**/*.pid
 /experiments/**/*.lock
 
