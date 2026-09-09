@@ -26,6 +26,7 @@ stereo_vo_sim:
     motion_reference_translation_m: 0.04
     planar_motion_constraint: true
     loop_closure_enabled: true
+    loop_closure_apply_correction: false
     loop_check_period_frames: 15
     loop_min_keyframe_gap: 8
     loop_min_matches: 35

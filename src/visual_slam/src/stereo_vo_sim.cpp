@@ -116,6 +116,7 @@ public:
     motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
     planar_motion_constraint_ = declare_parameter<bool>("planar_motion_constraint", true);
     loop_closure_enabled_ = declare_parameter<bool>("loop_closure_enabled", true);
+    loop_closure_apply_correction_ = declare_parameter<bool>("loop_closure_apply_correction", false);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -1302,7 +1303,7 @@ private:
     last_loop_closure_ = LoopClosure{};
     if (loop_closure_enabled_ && processed_frames_ % loop_check_period_frames_ == 0) {
       last_loop_closure_ = detect_loop_closure(current);
-      if (last_loop_closure_.accepted &&
+      if (loop_closure_apply_correction_ && last_loop_closure_.accepted &&
         pose_distance(last_loop_closure_.corrected_pose, world_T_current_) > 0.5)
       {
         smooth_frames_remaining_ = smooth_transition_frames_;
@@ -1409,6 +1410,7 @@ private:
          << ",\"loop_closure_matches\":" << last_loop_closure_.matches
          << ",\"loop_closure_inliers\":" << last_loop_closure_.inliers
          << ",\"loop_closure_rmse_px\":" << json_number(last_loop_closure_.reprojection_rmse)
+         << ",\"loop_closure_apply_correction\":" << (loop_closure_apply_correction_ ? "true" : "false")
          << ",\"loop_closure_count\":" << loop_closure_count_
          << "}";
     status.data = data.str();
@@ -1534,6 +1536,7 @@ private:
   double motion_reference_translation_m_{};
   bool planar_motion_constraint_{true};
   bool loop_closure_enabled_{true};
+  bool loop_closure_apply_correction_{false};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};
   int loop_min_matches_{};
