@@ -60,6 +60,7 @@ class ExperimentRecorder(Node):
         self.active = False
         self.statuses = []
         self.truth_positions = []
+        self.visual_positions = []
         self.status_file = None
         self.odom_file = None
         self.truth_file = None
@@ -74,6 +75,7 @@ class ExperimentRecorder(Node):
 
     def open_files(self):
         self.truth_positions.clear()
+        self.visual_positions.clear()
         self.status_file = (self.output_dir / "status.jsonl").open("w", encoding="utf-8")
         self.odom_file = (self.output_dir / "visual_odom.csv").open("w", newline="", encoding="utf-8")
         self.truth_file = (self.output_dir / "sim_odom.csv").open("w", newline="", encoding="utf-8")
@@ -143,6 +145,12 @@ class ExperimentRecorder(Node):
         ])
 
     def odom_callback(self, message):
+        self.visual_positions.append((
+            stamp_seconds(message.header.stamp),
+            message.pose.pose.position.x,
+            message.pose.pose.position.y,
+            message.pose.pose.position.z,
+        ))
         if self.odom_file is not None:
             self.write_odom(self.odom_writer, message, time.time())
 
@@ -282,11 +290,31 @@ def summarize(node, mode, run, duration, speed, angular):
     last = node.statuses[-1] if node.statuses else {}
     truth_x = [item[1] for item in node.truth_positions]
     truth_y = [item[2] for item in node.truth_positions]
+    visual_positions = node.visual_positions
+    def path_length(points):
+        return sum(
+            ((points[i][1] - points[i - 1][1]) ** 2 +
+             (points[i][2] - points[i - 1][2]) ** 2 +
+             (points[i][3] - points[i - 1][3]) ** 2) ** 0.5
+            for i in range(1, len(points))
+        )
     truth_distance = 0.0
     if truth_x:
         truth_distance = ((max(truth_x) - min(truth_x)) ** 2 +
                           (max(truth_y) - min(truth_y)) ** 2) ** 0.5
     visual_distance = float(last.get("visual_distance_m", 0.0) or 0.0)
+    truth_path_distance = path_length([
+        (index, x, y, 0.0) for index, (x, y) in enumerate(zip(truth_x, truth_y))
+    ])
+    visual_path_distance = path_length(visual_positions)
+    visual_closure_error = None
+    truth_closure_error = None
+    if len(visual_positions) >= 2:
+        visual_closure_error = ((visual_positions[-1][1] - visual_positions[0][1]) ** 2 +
+                                (visual_positions[-1][2] - visual_positions[0][2]) ** 2) ** 0.5
+    if len(node.truth_positions) >= 2:
+        truth_closure_error = ((node.truth_positions[-1][1] - node.truth_positions[0][1]) ** 2 +
+                               (node.truth_positions[-1][2] - node.truth_positions[0][2]) ** 2) ** 0.5
     return {
         "mode": mode,
         "run": run,
@@ -307,8 +335,12 @@ def summarize(node, mode, run, duration, speed, angular):
         "truth_end_x": truth_x[-1] if truth_x else None,
         "truth_distance_m": truth_distance,
         "visual_distance_m": visual_distance,
-        "visual_truth_distance_ratio": (visual_distance / truth_distance
-                                         if truth_distance > 1e-6 else None),
+        "truth_path_distance_m": truth_path_distance,
+        "visual_path_distance_m": visual_path_distance,
+        "visual_truth_distance_ratio": (visual_path_distance / truth_path_distance
+                                         if truth_path_distance > 1e-6 else None),
+        "visual_closure_error_m": visual_closure_error,
+        "truth_closure_error_m": truth_closure_error,
         "max_consecutive_tracking_failures": max_consecutive_failures(states),
     }
 
@@ -343,6 +375,7 @@ def run_one(node, mode, run, args, root):
     # Discard any latched sample from before the reset. All run statistics
     # must describe motion after the confirmed origin check.
     node.truth_positions.clear()
+    node.visual_positions.clear()
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
     process, log_handle = start_vo(mode, output_dir / "stereo_vo_sim.log", map_export_path)
     bag_process = None

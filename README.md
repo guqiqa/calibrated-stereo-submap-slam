@@ -172,7 +172,7 @@ ros2 run visual_slam_gazebo run_experiment_profile.py \
   --gui --record
 ```
 
-启用地图导出后，每个运行目录会生成 `map_points.csv`、`raw_map_points.csv`、`stable_map_points.csv`、`keyframes.csv` 和 `trajectory_visual.csv`。后三类坐标同时包含初始光学坐标和 Gazebo 对齐坐标；`stable_map_points.csv` 只保留达到最小观测次数的融合点。
+启用地图导出后，每个运行目录会生成 `map_points.csv`、`raw_map_points.csv`、`stable_map_points.csv`、`keyframes.csv` 和 `trajectory_visual.csv`。后三类坐标同时包含初始光学坐标和 Gazebo 对齐坐标；`stable_map_points.csv` 只保留达到最小观测次数的融合点。往返实验摘要同时报告路径长度比例和闭合误差，避免用路线跨度错误评价往返路程。
 
 ## 当前限制与下一步
 

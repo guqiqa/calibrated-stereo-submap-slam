@@ -224,6 +224,8 @@ ros2 run visual_slam_gazebo run_experiment_profile.py \
 
 `--record` 会为每个运行保存双目图像、CameraInfo、`/sim/odom`、视觉里程计和状态的 rosbag；`--gui` 显式保持 Gazebo 可视化启动，`--no-gui` 可用于无 WSLg 环境。
 
+往返实验的 `summary.json` 同时保存 `truth_path_distance_m`、`visual_path_distance_m`、`visual_truth_distance_ratio` 和 `visual_closure_error_m`。路径比例用于尺度评估，闭合误差用于评估累计漂移，不能用起终点跨度代替往返路径长度。
+
 另开终端启动独立仿真 VO：
 
 ```bash
