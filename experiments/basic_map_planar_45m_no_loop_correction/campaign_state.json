@@ -1,0 +1,15 @@
+{
+  "state": "complete",
+  "profile": "basic_map_45m_roundtrip",
+  "route_m": 45.0,
+  "modes": [
+    "global"
+  ],
+  "runs": 1,
+  "output": "/mnt/d/\u79d1\u7814slam/experiments/basic_map_planar_45m_no_loop_correction",
+  "gazebo_started_by_script": true,
+  "gazebo_gui": false,
+  "gazebo_log": "/mnt/d/\u79d1\u7814slam/experiments/basic_map_planar_45m_no_loop_correction/gazebo.log",
+  "gzclient_log": null,
+  "updated_at": "2026-09-09T21:08:03+0800"
+}
