@@ -614,6 +614,11 @@ private:
     submap.map_point_counts.push_back(static_cast<int>(keyframe.frame.points3d.size()));
     if (representative && !keyframe.frame.descriptors.empty()) {
       submap.representative_descriptors.push_back(keyframe.frame.descriptors);
+      if (submap.id >= 0) {
+        global_index_descriptors_.push_back(keyframe.frame.descriptors);
+        global_index_submap_ids_.insert(
+          global_index_submap_ids_.end(), keyframe.frame.descriptors.rows, submap.id);
+      }
     }
     if (submap.id >= 0) {
       trim_submap_window(submap);
@@ -733,6 +738,37 @@ private:
     }
     const int normalizer = std::max(1, std::min(switch_min_matches_, frame.descriptors.rows));
     return std::min(1.0, static_cast<double>(good) / normalizer);
+  }
+
+  std::vector<double> global_descriptor_scores(const Frame & frame) const
+  {
+    std::vector<double> scores(submaps_.size(), 0.0);
+    if (frame.descriptors.empty() || global_index_descriptors_.empty() ||
+      global_index_submap_ids_.size() != static_cast<std::size_t>(global_index_descriptors_.rows))
+    {
+      return scores;
+    }
+    std::vector<std::vector<cv::DMatch>> candidates;
+    matcher_->knnMatch(frame.descriptors, global_index_descriptors_, candidates, 2);
+    std::vector<int> votes(submaps_.size(), 0);
+    for (const auto & candidate : candidates) {
+      if (candidate.size() != 2 || candidate[0].distance >= 0.80F * candidate[1].distance) {
+        continue;
+      }
+      const int train_index = candidate[0].trainIdx;
+      if (train_index < 0 || train_index >= static_cast<int>(global_index_submap_ids_.size())) {
+        continue;
+      }
+      const int submap_id = global_index_submap_ids_[train_index];
+      if (submap_id >= 0 && submap_id < static_cast<int>(votes.size())) {
+        ++votes[submap_id];
+      }
+    }
+    const int normalizer = std::max(1, std::min(switch_min_matches_, frame.descriptors.rows));
+    for (std::size_t id = 0; id < votes.size(); ++id) {
+      scores[id] = std::min(1.0, static_cast<double>(votes[id]) / normalizer);
+    }
+    return scores;
   }
 
   MapMatch validate_map(const Frame & frame, const Submap & submap, double visual_score, double topology_score)
@@ -872,10 +908,11 @@ private:
     if (submap_mode_ == "fixed") {
       ids = fixed_candidate_ids();
     } else {
+      const std::vector<double> visual_scores = global_descriptor_scores(frame);
       std::vector<std::pair<double, int>> ranked;
       ranked.reserve(submaps_.size());
       for (const auto & submap : submaps_) {
-        const double visual = descriptor_score(frame, submap);
+        const double visual = visual_scores[submap.id];
         const double pose = submap.center_pose.empty() ? 0.0 :
           std::exp(-pose_distance(submap.center_pose, world_T_current_) *
           pose_distance(submap.center_pose, world_T_current_) / 18.0);
@@ -888,15 +925,25 @@ private:
       for (int i = 0; i < std::min(candidate_count_, static_cast<int>(ranked.size())); ++i) {
         ids.push_back(ranked[i].second);
       }
+      for (const int id : ids) {
+        auto & submap = submaps_[id];
+        MapMatch match = validate_map(frame, submap, visual_scores[id], topology_score(id));
+        match.pose_score = submap.center_pose.empty() ? 0.0 :
+          std::exp(-pose_distance(submap.center_pose, world_T_current_) *
+          pose_distance(submap.center_pose, world_T_current_) / 18.0);
+        last_candidates_.push_back(std::move(match));
+      }
     }
-    for (const int id : ids) {
-      auto & submap = submaps_[id];
-      const double visual = descriptor_score(frame, submap);
-      MapMatch match = validate_map(frame, submap, visual, topology_score(id));
-      match.pose_score = submap.center_pose.empty() ? 0.0 :
-        std::exp(-pose_distance(submap.center_pose, world_T_current_) *
-        pose_distance(submap.center_pose, world_T_current_) / 18.0);
-      last_candidates_.push_back(std::move(match));
+    if (submap_mode_ == "fixed") {
+      for (const int id : ids) {
+        auto & submap = submaps_[id];
+        const double visual = descriptor_score(frame, submap);
+        MapMatch match = validate_map(frame, submap, visual, topology_score(id));
+        match.pose_score = submap.center_pose.empty() ? 0.0 :
+          std::exp(-pose_distance(submap.center_pose, world_T_current_) *
+          pose_distance(submap.center_pose, world_T_current_) / 18.0);
+        last_candidates_.push_back(std::move(match));
+      }
     }
     std::sort(last_candidates_.begin(), last_candidates_.end(), [](const auto & lhs, const auto & rhs) {
       const double lhs_score = 0.50 * lhs.visual_score + 0.30 * lhs.pose_score + 0.20 * lhs.topology_score;
@@ -1626,6 +1673,8 @@ private:
   Submap global_map_;
   std::map<int, Keyframe> keyframes_;
   std::vector<Submap> submaps_;
+  cv::Mat global_index_descriptors_;
+  std::vector<int> global_index_submap_ids_;
   std::vector<MapMatch> last_candidates_;
   std::vector<TrajectorySample> trajectory_samples_;
   LoopClosure last_loop_closure_;
