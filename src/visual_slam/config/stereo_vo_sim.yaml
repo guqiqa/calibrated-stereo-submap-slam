@@ -53,4 +53,5 @@ stereo_vo_sim:
     switch_min_inliers: 20
     switch_max_reprojection_px: 3.0
     smooth_transition_frames: 5
+    submap_apply_pose_correction: false
     map_fusion_radius_m: 0.10

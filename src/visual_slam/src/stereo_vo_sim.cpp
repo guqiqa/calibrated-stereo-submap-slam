@@ -143,6 +143,8 @@ public:
     switch_min_inliers_ = declare_parameter<int>("switch_min_inliers", 20);
     switch_max_reprojection_px_ = declare_parameter<double>("switch_max_reprojection_px", 3.0);
     smooth_transition_frames_ = declare_parameter<int>("smooth_transition_frames", 5);
+    submap_apply_pose_correction_ = declare_parameter<bool>(
+      "submap_apply_pose_correction", false);
     map_fusion_radius_m_ = declare_parameter<double>("map_fusion_radius_m", 0.10);
     map_export_path_ = declare_parameter<std::string>("map_export_path", "");
     gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
@@ -925,7 +927,7 @@ private:
     active_submap_id_ = best->submap_id;
     ++switch_count_;
     pending_switch_frames_ = 0;
-    if (!best->world_pose.empty()) {
+    if (submap_apply_pose_correction_ && !best->world_pose.empty()) {
       smooth_frames_remaining_ = smooth_transition_frames_;
       smooth_target_pose_ = best->world_pose.clone();
     }
@@ -1401,6 +1403,8 @@ private:
          << ",\"submaps\":" << submaps_.size()
          << ",\"switch_count\":" << switch_count_
          << ",\"wrong_switch_count\":" << wrong_switch_count_
+         << ",\"submap_apply_pose_correction\":" <<
+      (submap_apply_pose_correction_ ? "true" : "false")
          << ",\"motion_source\":\"" << motion_source_ << "\""
          << ",\"valid_matches\":" << temporal_matches
          << ",\"ransac_inliers\":" << last_rigid_inliers_
@@ -1574,6 +1578,7 @@ private:
   int switch_min_inliers_{};
   double switch_max_reprojection_px_{};
   int smooth_transition_frames_{};
+  bool submap_apply_pose_correction_{false};
   double map_fusion_radius_m_{};
   std::string map_export_path_;
   bool baseline_parameter_declared_{false};
