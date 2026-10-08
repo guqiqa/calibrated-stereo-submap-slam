@@ -2,6 +2,7 @@
 """Run a named scale experiment from setup through result archival."""
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,9 @@ import signal
 import subprocess
 import sys
 import time
+
+
+GAZEBO_LOCK_PATH = Path("/tmp/visual_slam_gazebo_experiment.lock")
 
 
 # Edit this table when adding a new route or changing an experiment campaign.
@@ -117,6 +121,43 @@ def service_available(service):
     return service in result.stdout.split()
 
 
+def gazebo_server_pids():
+    """Return live Gazebo Classic server PIDs without relying on ROS discovery."""
+    result = subprocess.run(
+        ["pgrep", "-x", "gzserver"], check=False, capture_output=True, text=True
+    )
+    return [int(value) for value in result.stdout.split() if value.isdigit()]
+
+
+def acquire_experiment_lock():
+    """Prevent concurrent campaign scripts from each launching Gazebo."""
+    handle = GAZEBO_LOCK_PATH.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        handle.close()
+        raise RuntimeError(
+            f"Another experiment owns {GAZEBO_LOCK_PATH}; stop it before starting a new campaign"
+        ) from exc
+    handle.write(f"pid={os.getpid()} started={time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+    handle.flush()
+    return handle
+
+
+def require_single_gazebo(expected_pid=None):
+    pids = gazebo_server_pids()
+    if len(pids) != 1:
+        raise RuntimeError(
+            f"Expected exactly one gzserver, found {len(pids)}: {pids}. "
+            "Stop residual Gazebo processes before running the experiment."
+        )
+    if expected_pid is not None and pids[0] != expected_pid:
+        raise RuntimeError(
+            f"Gazebo ownership mismatch: launched PID {expected_pid}, live PID is {pids[0]}"
+        )
+    return pids[0]
+
+
 def start_gazebo(output, gui):
     """Start Gazebo in a detached process group so the terminal stays usable."""
     log_path = output / "gazebo.log"
@@ -167,7 +208,11 @@ def wait_for_gazebo(process, timeout=45.0):
                 "Gazebo launch exited before ROS services became available; "
                 "see gazebo.log"
             )
+        pids = gazebo_server_pids()
+        if len(pids) > 1:
+            raise RuntimeError(f"Multiple gzserver instances detected during startup: {pids}")
         if all(service_available(name) for name in required):
+            require_single_gazebo()
             return
         time.sleep(1.0)
     raise RuntimeError(
@@ -202,6 +247,7 @@ def main():
         raise SystemExit("runs must be >= 1 and warmup must be >= 0")
     if args.duration is not None and args.duration <= 0.0:
         raise SystemExit("duration must be > 0")
+    experiment_lock = acquire_experiment_lock()
     profile = dict(PROFILES[args.profile])
     output = Path(args.output_root or profile["output"]).resolve()
     command_speed = (profile.get("command_speed_mps", 0.2)
@@ -262,7 +308,14 @@ def main():
         campaign_state, "starting", args.profile, args, output, False
     )
     try:
-        if service_available("/reset_world") and service_available("/unpause_physics"):
+        existing_pids = gazebo_server_pids()
+        if len(existing_pids) > 1:
+            raise RuntimeError(f"Multiple gzserver instances already running: {existing_pids}")
+        if existing_pids:
+            # A server process can exist before DDS services become visible. Wait for
+            # that process instead of racing it by launching another server.
+            wait_for_gazebo(None)
+            require_single_gazebo(existing_pids[0])
             print("Using the existing Gazebo instance.", flush=True)
             if not args.no_gui and not gui_available():
                 gui_process, gui_log_handle, gui_log_path = start_gazebo_gui(output)
@@ -285,6 +338,7 @@ def main():
                 f"log: {gazebo_log_path}", flush=True
             )
             wait_for_gazebo(gazebo_process)
+            require_single_gazebo()
         write_campaign_state(
             campaign_state, "running", args.profile, args, output,
             gazebo_started, gazebo_log_path, gui_log_path
@@ -327,6 +381,7 @@ def main():
             gazebo_log_handle.close()
         if gui_log_handle is not None:
             gui_log_handle.close()
+        experiment_lock.close()
 
 
 if __name__ == "__main__":

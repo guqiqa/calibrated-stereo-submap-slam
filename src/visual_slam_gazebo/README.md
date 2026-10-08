@@ -95,9 +95,9 @@ ros2 run visual_slam_gazebo analyze_route_segments.py \
   --segment-size 5.0 --max-position 45.0
 ```
 
-也可以使用统一的规模实验入口切换路线。该入口会自动启动 Gazebo GUI（如果
-`/reset_world` 和 `/unpause_physics` 尚不可用），并将 Gazebo 进程放在独立进程组
-中，避免当前终端接管 GUI 键盘事件：
+也可以使用统一的规模实验入口切换路线。该入口会检查 `gzserver` 进程和
+`/reset_world`、`/unpause_physics` 服务，需要时自动启动 Gazebo，并将 Gazebo
+进程放在独立进程组中，避免当前终端接管 GUI 键盘事件：
 
 ```bash
 ros2 run visual_slam_gazebo run_experiment_profile.py --profile main_45m
@@ -124,6 +124,11 @@ ros2 run visual_slam_gazebo run_experiment_profile.py --list-profiles
 `mode/run_XX` 目录保存原始状态、双目视觉里程计、仿真真值、VO 日志、摘要、参数
 和分段指标。可用 `--runs`、`--modes` 和 `--output-root` 覆盖重复次数、实验组和
 输出位置。
+
+入口使用 `/tmp/visual_slam_gazebo_experiment.lock` 防止两个 campaign 并发启动。
+如果已存在一个 `gzserver` 但 ROS 服务尚未发现，脚本会等待该实例，不会
+启动第二个。如果启动前或启动过程中发现多个 `gzserver`，实验会立即中止，
+保留日志并等待人工确认残留进程，不会自动误杀其他实验。
 
 常用控制选项：
 
