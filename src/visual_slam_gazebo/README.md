@@ -249,3 +249,15 @@ ros2 launch visual_slam stereo_vo_sim.launch.py
 仿真真值 `/sim/odom` 只用于实验对比，不作为视觉算法输入；节点不发布 TF、不控制机器人。状态 JSON 包含双目三维点数、时序匹配数、PnP 内点数、图像时间差和处理耗时。
 
 建议首先使用 `0.2~0.3 m/s` 直行验证连续跟踪，再加入小角速度形成平滑弧线。纯原地大角度旋转会让视场主要落在单侧墙面，双目有效点可能下降，应作为纹理退化和鲁棒性专项工况记录。
+
+### 重复 campaign 汇总
+
+对已完成的 G/S/P 重复实验，可使用离线汇总脚本：
+
+```bash
+python3 /mnt/d/科研slam/src/visual_slam_gazebo/scripts/aggregate_campaign.py \
+  /mnt/d/科研slam/experiments/formal_gsp_45m_10x_20261008
+```
+
+脚本不修改原始 `run_XX` 数据，在 `analysis/` 生成 `campaign_runs.csv`、
+`campaign_summary.json`、`campaign_metrics.png` 和 `campaign_repeatability.png`。默认通过条件为路径比例在 `0.98~1.02`、无跟踪失败和错误子地图切换。
