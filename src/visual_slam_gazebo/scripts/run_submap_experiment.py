@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -241,18 +242,21 @@ def spin_for(node, seconds):
         rclpy.spin_once(node, timeout_sec=0.1)
 
 
-def stop_process(process):
+def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
+    """Stop a process group and report whether a forced kill was required."""
     if process is None or process.poll() is not None:
-        return
+        return False
     try:
         os.killpg(process.pid, signal.SIGINT)
     except ProcessLookupError:
-        return
+        return False
     try:
-        process.wait(timeout=8)
+        process.wait(timeout=interrupt_timeout)
+        return False
     except subprocess.TimeoutExpired:
         process.kill()
-        process.wait(timeout=3)
+        process.wait(timeout=kill_timeout)
+        return True
 
 
 def start_vo(mode, log_path, map_export_path=None):
@@ -270,7 +274,11 @@ def start_vo(mode, log_path, map_export_path=None):
 
 
 def start_rosbag(output_dir):
-    bag_dir = output_dir / "rosbag"
+    # Recording raw stereo images directly to /mnt/<drive> can stall rosbag's
+    # SQLite writer for several seconds. Record on WSL's native filesystem,
+    # then move the closed bag into the experiment directory.
+    staging_root = Path(tempfile.mkdtemp(prefix="visual_slam_rosbag_"))
+    staging_bag_dir = staging_root / "rosbag"
     log_path = output_dir / "rosbag.log"
     log_handle = log_path.open("w", encoding="utf-8")
     topics = [
@@ -279,13 +287,23 @@ def start_rosbag(output_dir):
         "/sim/odom", "/visual_slam/odometry_sim", "/visual_slam/status_sim",
     ]
     process = subprocess.Popen(
-        ["ros2", "bag", "record", "-o", str(bag_dir), *topics],
+        ["ros2", "bag", "record", "-o", str(staging_bag_dir), *topics],
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         start_new_session=True,
     )
-    return process, log_handle
+    return process, log_handle, staging_root, staging_bag_dir
+
+
+def finalize_rosbag(output_dir, staging_root, staging_bag_dir):
+    if staging_bag_dir is None or not staging_bag_dir.exists():
+        return
+    target = output_dir / "rosbag"
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.move(str(staging_bag_dir), str(target))
+    shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def dump_parameters(output_dir, process=None, attempts=5):
@@ -436,10 +454,12 @@ def run_one(node, mode, run, args, root):
     resource_monitor.start()
     bag_process = None
     bag_log_handle = None
+    bag_staging_root = None
+    bag_staging_dir = None
     try:
         spin_for(node, args.warmup)
         if args.record_bag:
-            bag_process, bag_log_handle = start_rosbag(output_dir)
+            bag_process, bag_log_handle, bag_staging_root, bag_staging_dir = start_rosbag(output_dir)
             spin_for(node, 1.0)
         node.active = True
         if args.reverse_after is None:
@@ -506,12 +526,20 @@ def run_one(node, mode, run, args, root):
     finally:
         node.active = False
         node.send_stop()
-        stop_process(bag_process)
+        # Image bags can take tens of seconds to flush on a mounted Windows
+        # volume. Killing rosbag during that flush corrupts its SQLite index.
+        bag_forced = stop_process(bag_process, interrupt_timeout=120.0, kill_timeout=5.0)
         stop_process(process)
         resource_monitor.stop()
         log_handle.close()
         if bag_log_handle is not None:
             bag_log_handle.close()
+        finalize_rosbag(output_dir, bag_staging_root, bag_staging_dir)
+        if bag_forced:
+            (output_dir / "rosbag_forced_termination.txt").write_text(
+                "rosbag did not finish flushing within 120 seconds and was forcefully terminated.\n",
+                encoding="utf-8",
+            )
         node.write_diagnostics()
         node.close_files()
         node.expected_mode = None

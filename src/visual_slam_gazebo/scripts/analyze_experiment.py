@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -66,6 +67,77 @@ def write_event_tables(run_dir, rows):
                 writer.writerow(output)
 
 
+def inspect_rosbag(run_dir):
+    bag_dir = run_dir / "rosbag"
+    result = {
+        "status": "unavailable_no_rosbag",
+        "metadata_exists": False,
+        "database_integrity": None,
+        "topics": {},
+        "left_right_count_difference": None,
+    }
+    if not bag_dir.exists():
+        return result
+
+    result["metadata_exists"] = (bag_dir / "metadata.yaml").exists()
+    databases = sorted(bag_dir.glob("*.db3"))
+    if not databases:
+        result["status"] = "invalid_missing_database"
+        return result
+
+    required_topics = {
+        "/sim/left/image_raw", "/sim/right/image_raw",
+        "/sim/left/camera_info", "/sim/right/camera_info",
+        "/sim/odom", "/visual_slam/odometry_sim", "/visual_slam/status_sim",
+    }
+    integrity_errors = []
+    topic_timestamps = {}
+    try:
+        for database in databases:
+            connection = sqlite3.connect(f"file:{database.as_posix()}?mode=ro", uri=True)
+            try:
+                checks = [row[0] for row in connection.execute("PRAGMA integrity_check")]
+                integrity_errors.extend(item for item in checks if item != "ok")
+                query = """SELECT t.name, m.timestamp FROM messages m
+                           JOIN topics t ON t.id = m.topic_id ORDER BY m.timestamp"""
+                for topic, timestamp in connection.execute(query):
+                    topic_timestamps.setdefault(topic, []).append(int(timestamp))
+            finally:
+                connection.close()
+    except sqlite3.DatabaseError as exc:
+        integrity_errors.append(str(exc))
+
+    result["database_integrity"] = "ok" if not integrity_errors else "failed"
+    if integrity_errors:
+        result["integrity_errors"] = integrity_errors[:10]
+    for topic, timestamps in sorted(topic_timestamps.items()):
+        timestamps.sort()
+        gaps = [(right - left) / 1e9 for left, right in zip(timestamps, timestamps[1:])]
+        result["topics"][topic] = {
+            "messages": len(timestamps),
+            "span_s": (timestamps[-1] - timestamps[0]) / 1e9 if len(timestamps) > 1 else 0.0,
+            "max_gap_s": max(gaps, default=0.0),
+        }
+    left_count = len(topic_timestamps.get("/sim/left/image_raw", []))
+    right_count = len(topic_timestamps.get("/sim/right/image_raw", []))
+    result["left_right_count_difference"] = abs(left_count - right_count)
+    missing = sorted(topic for topic in required_topics if not topic_timestamps.get(topic))
+    if missing:
+        result["missing_topics"] = missing
+
+    images_continuous = (
+        left_count > 0 and right_count > 0 and
+        result["left_right_count_difference"] <= 1 and
+        result["topics"]["/sim/left/image_raw"]["max_gap_s"] <= 0.5 and
+        result["topics"]["/sim/right/image_raw"]["max_gap_s"] <= 0.5
+    )
+    if (result["metadata_exists"] and not integrity_errors and not missing and images_continuous):
+        result["status"] = "complete"
+    else:
+        result["status"] = "incomplete"
+    return result
+
+
 def run_quality(run_dir):
     required = ["status.jsonl", "visual_odom.csv", "sim_odom.csv", "summary.json",
                 "frame_diagnostics.csv", "resolved_parameters.yaml", "stereo_vo_sim.log"]
@@ -74,6 +146,7 @@ def run_quality(run_dir):
                     "nonempty": (run_dir / name).exists() and (run_dir / name).stat().st_size > 0}
              for name in required}
     states = [row.get("state") for row in rows]
+    rosbag = inspect_rosbag(run_dir)
     report = {
         "run": str(run_dir),
         "run_state": "complete",
@@ -84,11 +157,14 @@ def run_quality(run_dir):
         "retrieval_fields_available": all(any(key in row for row in rows) for key in
                                            ("retrieval_method", "geometry_verified", "reject_reason")),
         "coverage_labels_available": any(row.get("coverage_label_available") for row in rows),
-        "stereo_image_continuity": "available_in_rosbag" if (run_dir / "rosbag").exists() else "unavailable_no_rosbag",
+        "stereo_image_continuity": rosbag["status"],
+        "rosbag": rosbag,
     }
     if not rows or invalid or any(not value["nonempty"] for value in files.values()):
         report["run_state"] = "incomplete"
     if report["max_consecutive_tracking_failures"] >= 3:
+        report["run_state"] = "incomplete"
+    if (run_dir / "rosbag").exists() and rosbag["status"] != "complete":
         report["run_state"] = "incomplete"
     (run_dir / "data_quality_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     write_event_tables(run_dir, rows)
