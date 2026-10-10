@@ -78,7 +78,7 @@ def main():
     labeled = [item for item in events if item["candidate_covered"] is not None and item.get("q_top1") is not None]
     metrics = {
         "status": "available" if labeled else "unavailable",
-        "reason": "legacy logs have no legal-submap/query labels and calibrated q_top1" if not labeled else "",
+        "reason": "status logs have no independent legal-submap/query labels and calibrated q_top1" if not labeled else "",
         "sample_count": len(labeled),
         "ece": None,
         "brier": None,

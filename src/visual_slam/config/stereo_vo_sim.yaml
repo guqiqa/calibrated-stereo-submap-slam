@@ -52,6 +52,8 @@ stereo_vo_sim:
     switch_min_matches: 30
     switch_min_inliers: 20
     switch_max_reprojection_px: 3.0
+    retrieval_min_probability: 0.50
+    retrieval_low_reliability: 0.20
     smooth_transition_frames: 5
     submap_apply_pose_correction: false
     map_fusion_radius_m: 0.10

@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Unified project selection, experiment execution, analysis, and archival."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import time
+
+
+METHODS = ("c0", "c1", "c4", "p")
+ROUTE_PROFILES = {10: "script_smoke", 45: "main_45m", 60: "highload_60m",
+                  90: "highload_90m", 120: "highload_120m"}
+
+
+def repository_root():
+    return Path(__file__).resolve().parents[3]
+
+
+def default_config():
+    source_config = repository_root() / "config" / "experiment_profiles.yaml"
+    if source_config.exists():
+        return source_config
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        return Path(get_package_share_directory("visual_slam_gazebo")) / "config" / "experiment_profiles.yaml"
+    except (ImportError, LookupError):
+        return source_config
+
+
+def load_profiles(path):
+    # JSON is valid YAML. Keeping the file in this subset avoids a PyYAML runtime dependency.
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default=str(default_config()))
+    parser.add_argument("--list-projects", action="store_true")
+    parser.add_argument("--show-project")
+    parser.add_argument("--project")
+    parser.add_argument("--scenario")
+    parser.add_argument("--methods", nargs="+", choices=METHODS)
+    parser.add_argument("--runs", type=int)
+    parser.add_argument("--duration", type=float)
+    parser.add_argument("--output-root")
+    parser.add_argument("--gui", action="store_true")
+    parser.add_argument("--no-gui", action="store_true")
+    parser.add_argument("--record", action="store_true")
+    parser.add_argument("--no-record", action="store_true")
+    parser.add_argument("--analyze", action="store_true")
+    parser.add_argument("--archive", action="store_true")
+    parser.add_argument("--shutdown-gazebo", action="store_true")
+    return parser.parse_args()
+
+
+def git_value(root, *args):
+    result = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True, check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+
+def update_state(path, state, **details):
+    payload = {"state": state, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), **details}
+    write_json(path, payload)
+
+
+def route_jobs(profile):
+    routes = profile.get("routes_m", [profile.get("route_m")])
+    jobs = []
+    for value in routes:
+        route = int(value)
+        duration_map = profile.get("duration_s_by_route", {})
+        duration = duration_map.get(str(route), profile.get("duration_s"))
+        if duration is None:
+            raise ValueError(f"project has no duration for route {route}")
+        jobs.append((route, float(duration)))
+    return jobs
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def archive_campaign(root, project, output):
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    target = root / "paper_package" / f"{project}_{timestamp}"
+    for name in ("manifest", "analysis", "logs", "protocol"):
+        (target / name).mkdir(parents=True, exist_ok=True)
+    for name in ("campaign_manifest.json", "campaign_state.json", "profile.json"):
+        source = output / name
+        if source.exists():
+            shutil.copy2(source, target / "manifest" / name)
+    if (output / "analysis").exists():
+        shutil.copytree(output / "analysis", target / "analysis", dirs_exist_ok=True)
+    for source in output.glob("*.log"):
+        shutil.copy2(source, target / "logs" / source.name)
+    protocol_dir = root / "src" / "visual_slam_gazebo" / "scripts"
+    for name in ("protocol_spec.md", "submap_retrieval_protocol.py", "calibration_metrics.py"):
+        if (protocol_dir / name).exists():
+            shutil.copy2(protocol_dir / name, target / "protocol" / name)
+    index = []
+    for source in sorted(output.rglob("*")):
+        if source.is_file():
+            index.append({"path": str(source.relative_to(output)), "size": source.stat().st_size,
+                          "sha256": sha256(source), "complete": True})
+    write_json(target / "raw_data_index.json", {"source": str(output), "files": index})
+    (target / "README.md").write_text(
+        f"# {project} experiment archive\n\nRaw data remains at `{output}`. "
+        "This package contains manifests, analysis, logs, protocol snapshots, and a SHA-256 index.\n",
+        encoding="utf-8")
+    return target
+
+
+def main():
+    args = parse_args()
+    profiles = load_profiles(args.config)
+    if args.list_projects:
+        for name, profile in profiles.items():
+            print(f"{name}: {profile.get('scene')} ({'ready' if profile.get('implemented', True) else 'not implemented'})")
+        return
+    if args.show_project:
+        if args.show_project not in profiles:
+            raise SystemExit(f"unknown project: {args.show_project}")
+        print(json.dumps(profiles[args.show_project], indent=2, ensure_ascii=False))
+        return
+    if not args.project or args.project not in profiles:
+        raise SystemExit("--project must name a configured project; use --list-projects")
+    profile = dict(profiles[args.project])
+    if not profile.get("implemented", True):
+        raise SystemExit(profile.get("blocked_reason", "project is not implemented"))
+    if args.scenario and args.scenario != profile.get("scene"):
+        raise SystemExit(f"scenario {args.scenario} does not match configured scene {profile.get('scene')}")
+    methods = args.methods or profile["methods"]
+    runs = args.runs or int(profile["runs"])
+    if runs < 1:
+        raise SystemExit("runs must be >= 1")
+    gui = profile.get("gui", True)
+    if args.gui:
+        gui = True
+    if args.no_gui:
+        gui = False
+    record = profile.get("record_bag", False)
+    if args.record:
+        record = True
+    if args.no_record:
+        record = False
+
+    root = repository_root()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output = Path(args.output_root).resolve() if args.output_root else root / "experiments" / f"{args.project}_{timestamp}"
+    output.mkdir(parents=True, exist_ok=True)
+    state_path = output / "campaign_state.json"
+    manifest = {
+        "project": args.project, "scene": profile["scene"], "scenario_seed": profile.get("scene_seed", 0),
+        "methods": methods, "runs": runs, "routes": route_jobs(profile), "speed_mps": profile["speed_mps"],
+        "query_mode": profile.get("query_mode"), "record_bag": record, "gui": gui,
+        "calibration_version": profile.get("calibration_version", "unfitted-v0"),
+        "camera": {"width": 640, "height": 480, "rate_hz": 15, "baseline_m": 0.07},
+        "submap": {"length_m": 5.0, "overlap_m": 1.5, "visual_budget": 4,
+                   "pose_budget": 3, "topology_budget": 2, "total_budget": 10},
+        "git_commit": git_value(root, "rev-parse", "HEAD"),
+        "git_dirty": bool(git_value(root, "status", "--porcelain")),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    write_json(output / "campaign_manifest.json", manifest)
+    # JSON is valid YAML and preserves a dependency-free frozen configuration snapshot.
+    write_json(output / "resolved_parameters.yaml", {"project": profile, "resolved": manifest})
+    runner = root / "src" / "visual_slam_gazebo" / "scripts" / "run_experiment_profile.py"
+    analyzer = root / "src" / "visual_slam_gazebo" / "scripts" / "analyze_experiment.py"
+    try:
+        update_state(state_path, "starting", project=args.project, output=str(output))
+        jobs = route_jobs(profile)
+        for job_index, (route, configured_duration) in enumerate(jobs):
+            duration = args.duration if args.duration is not None else configured_duration
+            route_output = output if len(route_jobs(profile)) == 1 else output / f"{route}m"
+            profile_name = ROUTE_PROFILES.get(route, "main_45m")
+            command = [sys.executable, str(runner), "--profile", profile_name,
+                       "--modes", *methods, "--runs", str(runs), "--duration", str(duration),
+                       "--output-root", str(route_output),
+                       "--skip-analysis"]
+            if profile.get("command_speed_mps") is not None:
+                command.extend(["--speed", str(profile["command_speed_mps"])])
+            command.append("--gui" if gui else "--no-gui")
+            if record:
+                command.append("--record")
+            if args.shutdown_gazebo and job_index == len(jobs) - 1:
+                command.append("--shutdown-gazebo")
+            update_state(state_path, "resetting", project=args.project, route_m=route)
+            update_state(state_path, "running", project=args.project, route_m=route, command=command)
+            environment = os.environ.copy()
+            environment.update({
+                "EXPERIMENT_PROJECT": args.project,
+                "EXPERIMENT_SCENE": profile["scene"],
+                "EXPERIMENT_ROUTE_M": str(route),
+                "EXPERIMENT_GIT_COMMIT": manifest["git_commit"] or "unknown",
+                "EXPERIMENT_CALIBRATION_VERSION": manifest["calibration_version"],
+            })
+            subprocess.run(command, cwd=root, env=environment, check=True)
+            update_state(state_path, "collecting", project=args.project, route_m=route)
+        if args.analyze or profile.get("analysis"):
+            update_state(state_path, "analyzing", project=args.project)
+            subprocess.run([sys.executable, str(analyzer), str(output),
+                            "--route-m", str(max(route for route, _ in route_jobs(profile)))], cwd=root, check=True)
+        archive_path = None
+        if args.archive:
+            update_state(state_path, "archiving", project=args.project)
+            archive_path = archive_campaign(root, args.project, output)
+        manifest["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        manifest["archive"] = str(archive_path) if archive_path else None
+        write_json(output / "campaign_manifest.json", manifest)
+        update_state(state_path, "complete", project=args.project, output=str(output), archive=manifest["archive"])
+        if archive_path:
+            shutil.copy2(output / "campaign_manifest.json", archive_path / "manifest" / "campaign_manifest.json")
+            shutil.copy2(state_path, archive_path / "manifest" / "campaign_state.json")
+        print(json.dumps({"output": str(output), "archive": manifest["archive"]}, ensure_ascii=False))
+    except KeyboardInterrupt:
+        update_state(state_path, "interrupted", project=args.project, output=str(output))
+        raise
+    except Exception as exc:
+        update_state(state_path, "failed", project=args.project, output=str(output), error=str(exc))
+        raise
+
+
+if __name__ == "__main__":
+    main()

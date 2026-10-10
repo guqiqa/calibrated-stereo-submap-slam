@@ -12,12 +12,18 @@ install(
 )
 
 install(
+  FILES ../../config/experiment_profiles.yaml
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+install(
   PROGRAMS scripts/check_stereo_topics.sh scripts/run_submap_experiment.py
            scripts/analyze_route_segments.py scripts/run_experiment_profile.py
            scripts/calibrate_sim_speed.py scripts/plot_map_alignment.py
            scripts/start_campaign_detached.sh scripts/submap_retrieval_protocol.py
            scripts/calibration_metrics.py scripts/evaluate_retrieval_protocol.py
            scripts/test_retrieval_protocol.py scripts/run_protocol_fixture.py
+           scripts/experiment_manager.py scripts/analyze_experiment.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

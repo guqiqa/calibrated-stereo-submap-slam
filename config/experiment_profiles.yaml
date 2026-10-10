@@ -1,0 +1,66 @@
+{
+  "script_smoke": {
+    "scene": "corridor_154m",
+    "route_m": 10,
+    "speed_mps": 0.2,
+    "duration_s": 10,
+    "methods": ["c1"],
+    "runs": 1,
+    "query_mode": "same_route_smoke",
+    "record_bag": false,
+    "gui": true,
+    "analysis": "basic"
+  },
+  "c1_c4_p_basic": {
+    "scene": "corridor_154m",
+    "route_m": 45,
+    "speed_mps": 0.2,
+    "duration_s": 225,
+    "methods": ["c0", "c1", "c4", "p"],
+    "runs": 3,
+    "query_mode": "online_minimal_closed_loop",
+    "independent_labels": false,
+    "record_bag": true,
+    "gui": true,
+    "analysis": "basic"
+  },
+  "highload_scale": {
+    "scene": "corridor_154m",
+    "routes_m": [45, 60, 90, 120],
+    "speed_mps": 0.2,
+    "duration_s_by_route": {"45": 225, "60": 300, "90": 450, "120": 600},
+    "methods": ["c0", "c1", "c4", "p"],
+    "runs": 3,
+    "query_mode": "online_minimal_closed_loop",
+    "independent_labels": false,
+    "record_bag": true,
+    "gui": true,
+    "analysis": "scaling"
+  },
+  "ood_rejection": {
+    "scene": "corridor_154m",
+    "route_m": 45,
+    "speed_mps": 0.2,
+    "duration_s": 225,
+    "perturbations": ["occlusion", "blur", "low_texture", "pose_jump", "cold_start"],
+    "methods": ["c1", "c4", "p"],
+    "runs": 5,
+    "query_mode": "independent",
+    "record_bag": true,
+    "gui": true,
+    "analysis": "calibration",
+    "implemented": false,
+    "blocked_reason": "Perturbation injection and independent mapping/query datasets are not implemented yet."
+  },
+  "multi_layout_calibration": {
+    "scene": "multi_layout",
+    "methods": ["c1", "c4", "p"],
+    "runs": 3,
+    "query_mode": "independent",
+    "record_bag": true,
+    "gui": true,
+    "analysis": "calibration",
+    "implemented": false,
+    "blocked_reason": "The three-topology, 30-layout scene generator is not implemented yet."
+  }
+}

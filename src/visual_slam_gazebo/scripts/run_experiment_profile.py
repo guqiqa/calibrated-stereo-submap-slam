@@ -17,6 +17,13 @@ GAZEBO_LOCK_PATH = Path("/tmp/visual_slam_gazebo_experiment.lock")
 
 # Edit this table when adding a new route or changing an experiment campaign.
 PROFILES = {
+    "script_smoke": {
+        "route_m": 10.0,
+        "duration_s": 50.0,
+        "command_speed_mps": 0.254522061,
+        "target_actual_speed_mps": 0.2,
+        "output": "experiments/script_smoke",
+    },
     "baseline_30m_speed02": {
         "route_m": 30.0,
         "duration_s": 150.0,
@@ -69,7 +76,8 @@ def parse_args():
     parser.add_argument("--list-profiles", action="store_true",
                         help="List the selectable experiment profiles and exit")
     parser.add_argument("--runs", type=int, default=10)
-    parser.add_argument("--modes", nargs="+", choices=["global", "fixed", "joint"],
+    parser.add_argument("--modes", nargs="+",
+                        choices=["c0", "c1", "c4", "p", "global", "fixed", "joint"],
                         default=["global", "fixed", "joint"])
     parser.add_argument("--speed", type=float, default=None,
                         help="Override calibrated command speed")

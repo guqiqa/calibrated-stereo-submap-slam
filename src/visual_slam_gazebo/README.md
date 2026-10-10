@@ -10,6 +10,21 @@
 和 `q_cov`。旧日志缺少合法子地图标签时，离线评估会保留诊断结果，但将覆盖率、
 ECE、Brier、NLL 和风险-覆盖率标记为 `unavailable`，不会用当前子地图字段推断真值。
 
+统一自动化入口使用根目录的 `config/experiment_profiles.yaml`。该文件采用 JSON
+兼容的 YAML 子集，因此不依赖 PyYAML：
+
+```bash
+python3 scripts/experiment_manager.py --list-projects
+python3 scripts/experiment_manager.py --show-project c1_c4_p_basic
+python3 scripts/experiment_manager.py --project c1_c4_p_basic \
+  --methods c0 c1 c4 p --runs 3 --gui --record --analyze --archive
+```
+
+总控入口调用现有 Gazebo 单实例保护与采集器，在每种方法之间停止节点、重置世界、
+确认原点并写入 manifest。`analyze_experiment.py` 自动生成数据质量、分段、检索和
+运行时汇总。`ood_rejection` 与 `multi_layout_calibration` 已登记但会拒绝启动，直到
+扰动注入器和独立 mapping/query 多布局数据生成器实现，防止生成名义上的伪实验。
+
 回放已有日志：
 
 ```bash

@@ -142,6 +142,8 @@ public:
     switch_min_matches_ = declare_parameter<int>("switch_min_matches", 30);
     switch_min_inliers_ = declare_parameter<int>("switch_min_inliers", 20);
     switch_max_reprojection_px_ = declare_parameter<double>("switch_max_reprojection_px", 3.0);
+    retrieval_min_probability_ = declare_parameter<double>("retrieval_min_probability", 0.50);
+    retrieval_low_reliability_ = declare_parameter<double>("retrieval_low_reliability", 0.20);
     smooth_transition_frames_ = declare_parameter<int>("smooth_transition_frames", 5);
     submap_apply_pose_correction_ = declare_parameter<bool>(
       "submap_apply_pose_correction", false);
@@ -153,8 +155,9 @@ public:
     if (processing_scale_ < 0.25 || processing_scale_ > 1.0) {
       throw std::runtime_error("processing_scale must be within [0.25, 1.0]");
     }
-    if (submap_mode_ != "global" && submap_mode_ != "fixed" && submap_mode_ != "joint") {
-      throw std::runtime_error("submap_mode must be global, fixed or joint");
+    const std::set<std::string> valid_modes{"c0", "c1", "c4", "p", "global", "fixed", "joint"};
+    if (valid_modes.count(submap_mode_) == 0U) {
+      throw std::runtime_error("submap_mode must be c0, c1, c4, p, global, fixed or joint");
     }
     if (submap_length_m_ <= 0.0 || submap_overlap_m_ < 0.0 || submap_overlap_m_ >= submap_length_m_) {
       throw std::runtime_error("submap_length_m and submap_overlap_m are invalid");
@@ -164,6 +167,11 @@ public:
       smooth_transition_frames_ < 1)
     {
       throw std::runtime_error("invalid submap manager parameters");
+    }
+    if (retrieval_min_probability_ <= 0.0 || retrieval_min_probability_ > 1.0 ||
+      retrieval_low_reliability_ < 0.0 || retrieval_low_reliability_ > 1.0)
+    {
+      throw std::runtime_error("invalid retrieval decision thresholds");
     }
     if (map_fusion_radius_m_ <= 0.0) {
       throw std::runtime_error("map_fusion_radius_m must be positive");
@@ -889,19 +897,119 @@ private:
     return ids;
   }
 
+  static double clamp01(double value)
+  {
+    return std::max(0.0, std::min(1.0, value));
+  }
+
+  static std::vector<int> top_ids(const std::vector<double> & scores, int count)
+  {
+    std::vector<int> ids(scores.size());
+    for (std::size_t i = 0; i < scores.size(); ++i) {
+      ids[i] = static_cast<int>(i);
+    }
+    std::sort(ids.begin(), ids.end(), [&scores](int lhs, int rhs) {return scores[lhs] > scores[rhs];});
+    if (static_cast<int>(ids.size()) > count) {
+      ids.resize(count);
+    }
+    return ids;
+  }
+
+  static void append_unique(std::vector<int> & destination, const std::vector<int> & source, int limit)
+  {
+    for (const int id : source) {
+      if (std::find(destination.begin(), destination.end(), id) == destination.end()) {
+        destination.push_back(id);
+      }
+      if (static_cast<int>(destination.size()) >= limit) {
+        return;
+      }
+    }
+  }
+
+  std::string retrieval_method() const
+  {
+    if (submap_mode_ == "global" || submap_mode_ == "c0") {
+      return "c0";
+    }
+    if (submap_mode_ == "joint" || submap_mode_ == "c4") {
+      return "c4";
+    }
+    if (submap_mode_ == "fixed") {
+      return "legacy_fixed";
+    }
+    return submap_mode_;
+  }
+
+  double candidate_fusion_score(const MapMatch & match) const
+  {
+    if (retrieval_method() == "c1") {
+      return match.visual_score;
+    }
+    if (retrieval_method() == "p") {
+      const double visual = std::max(1e-6, std::min(1.0 - 1e-6, match.visual_score));
+      const double pose = std::max(1e-6, std::min(1.0 - 1e-6, match.pose_score));
+      const double topology = std::max(1e-6, std::min(1.0 - 1e-6, match.topology_score));
+      return last_visual_reliability_ * std::log(visual) +
+             last_pose_reliability_ * std::log(pose) +
+             last_topology_reliability_ * std::log(topology);
+    }
+    return 0.50 * match.visual_score + 0.30 * match.pose_score + 0.20 * match.topology_score;
+  }
+
+  void update_retrieval_probability()
+  {
+    last_q_top1_ = 0.0;
+    if (last_candidates_.empty()) {
+      return;
+    }
+    const double peak = candidate_fusion_score(last_candidates_.front());
+    double total = 0.0;
+    for (const auto & candidate : last_candidates_) {
+      total += std::exp(8.0 * (candidate_fusion_score(candidate) - peak));
+    }
+    last_q_top1_ = total > 0.0 ? 1.0 / total : 0.0;
+  }
+
   void evaluate_submaps(const Frame & frame)
   {
     last_candidates_.clear();
+    last_visual_source_ids_.clear();
+    last_pose_source_ids_.clear();
+    last_topology_source_ids_.clear();
     last_matching_ms_ = 0.0;
+    last_retrieval_decision_ = "hold";
+    last_reject_reason_.clear();
+    last_geometry_verified_ = false;
+    last_selected_submap_ = -1;
+    last_q_top1_ = 0.0;
+    last_visual_reliability_ = clamp01(static_cast<double>(frame.descriptors.rows) /
+      static_cast<double>(std::max(1, max_features_)));
+    last_pose_reliability_ = clamp01(last_motion_consistency_ *
+      static_cast<double>(last_rigid_inliers_) / static_cast<double>(std::max(1, min_3d3d_inliers_ * 2)));
+    last_topology_reliability_ = active_submap_id_ >= 0 ? 1.0 : 0.0;
+    if (retrieval_method() == "c1") {
+      last_pose_reliability_ = 0.0;
+      last_topology_reliability_ = 0.0;
+    } else if (retrieval_method() == "c0") {
+      last_visual_reliability_ = 0.0;
+      last_pose_reliability_ = 0.0;
+      last_topology_reliability_ = 0.0;
+    }
     if (submaps_.empty() || frame.descriptors.empty()) {
+      last_retrieval_decision_ = "relocalize";
+      last_reject_reason_ = frame.descriptors.empty() ? "visual_evidence_unavailable" : "candidate_set_empty";
       return;
     }
     const auto started = std::chrono::steady_clock::now();
     std::vector<int> ids;
-    if (submap_mode_ == "global") {
+    if (submap_mode_ == "global" || submap_mode_ == "c0") {
       MapMatch match = validate_map(frame, global_map_, 1.0, 1.0);
       match.submap_id = -1;
       last_candidates_.push_back(match);
+      last_selected_submap_ = -1;
+      last_geometry_verified_ = match.inliers >= switch_min_inliers_ &&
+        match.reprojection_rmse <= switch_max_reprojection_px_;
       last_matching_ms_ = elapsed_ms(started);
       return;
     }
@@ -909,28 +1017,28 @@ private:
       ids = fixed_candidate_ids();
     } else {
       const std::vector<double> visual_scores = global_descriptor_scores(frame);
-      std::vector<std::pair<double, int>> ranked;
-      ranked.reserve(submaps_.size());
+      std::vector<double> pose_scores(submaps_.size(), 0.0);
+      std::vector<double> topology_scores(submaps_.size(), 0.0);
       for (const auto & submap : submaps_) {
-        const double visual = visual_scores[submap.id];
-        const double pose = submap.center_pose.empty() ? 0.0 :
+        pose_scores[submap.id] = submap.center_pose.empty() ? 0.0 :
           std::exp(-pose_distance(submap.center_pose, world_T_current_) *
           pose_distance(submap.center_pose, world_T_current_) / 18.0);
-        const double combined = 0.50 * visual + 0.30 * pose + 0.20 * topology_score(submap.id);
-        ranked.emplace_back(combined, submap.id);
+        topology_scores[submap.id] = topology_score(submap.id);
       }
-      std::sort(ranked.begin(), ranked.end(), [](const auto & lhs, const auto & rhs) {
-        return lhs.first > rhs.first;
-      });
-      for (int i = 0; i < std::min(candidate_count_, static_cast<int>(ranked.size())); ++i) {
-        ids.push_back(ranked[i].second);
+      last_visual_source_ids_ = top_ids(visual_scores, 4);
+      if (submap_mode_ == "c1") {
+        ids = last_visual_source_ids_;
+      } else {
+        last_pose_source_ids_ = top_ids(pose_scores, 3);
+        last_topology_source_ids_ = top_ids(topology_scores, 2);
+        append_unique(ids, last_visual_source_ids_, 10);
+        append_unique(ids, last_pose_source_ids_, 10);
+        append_unique(ids, last_topology_source_ids_, 10);
       }
       for (const int id : ids) {
         auto & submap = submaps_[id];
         MapMatch match = validate_map(frame, submap, visual_scores[id], topology_score(id));
-        match.pose_score = submap.center_pose.empty() ? 0.0 :
-          std::exp(-pose_distance(submap.center_pose, world_T_current_) *
-          pose_distance(submap.center_pose, world_T_current_) / 18.0);
+        match.pose_score = pose_scores[id];
         last_candidates_.push_back(std::move(match));
       }
     }
@@ -945,19 +1053,44 @@ private:
         last_candidates_.push_back(std::move(match));
       }
     }
-    std::sort(last_candidates_.begin(), last_candidates_.end(), [](const auto & lhs, const auto & rhs) {
-      const double lhs_score = 0.50 * lhs.visual_score + 0.30 * lhs.pose_score + 0.20 * lhs.topology_score;
-      const double rhs_score = 0.50 * rhs.visual_score + 0.30 * rhs.pose_score + 0.20 * rhs.topology_score;
-      return lhs_score > rhs_score;
+    std::sort(last_candidates_.begin(), last_candidates_.end(), [this](const auto & lhs, const auto & rhs) {
+      return candidate_fusion_score(lhs) > candidate_fusion_score(rhs);
     });
     last_matching_ms_ = elapsed_ms(started);
     if (last_candidates_.empty()) {
+      last_retrieval_decision_ = "relocalize";
+      last_reject_reason_ = "candidate_set_empty";
+      return;
+    }
+    update_retrieval_probability();
+    if (retrieval_method() == "p" && last_visual_reliability_ < retrieval_low_reliability_ &&
+      last_pose_reliability_ < retrieval_low_reliability_ &&
+      last_topology_reliability_ < retrieval_low_reliability_)
+    {
+      last_retrieval_decision_ = "relocalize";
+      last_reject_reason_ = "all_evidence_low_reliability";
       return;
     }
     const auto best = std::find_if(last_candidates_.begin(), last_candidates_.end(), [this](const MapMatch & match) {
       return match.inliers >= switch_min_inliers_ && match.reprojection_rmse <= switch_max_reprojection_px_;
     });
-    if (best == last_candidates_.end() || best->submap_id == active_submap_id_) {
+    if (best == last_candidates_.end()) {
+      last_retrieval_decision_ = "reject";
+      last_reject_reason_ = "geometry_verification_failed";
+      pending_submap_id_ = active_submap_id_;
+      pending_switch_frames_ = 0;
+      return;
+    }
+    last_geometry_verified_ = true;
+    last_selected_submap_ = best->submap_id;
+    if (last_q_top1_ < retrieval_min_probability_) {
+      last_retrieval_decision_ = "reject";
+      last_reject_reason_ = "low_calibrated_confidence";
+      pending_submap_id_ = active_submap_id_;
+      pending_switch_frames_ = 0;
+      return;
+    }
+    if (best->submap_id == active_submap_id_) {
       pending_submap_id_ = active_submap_id_;
       pending_switch_frames_ = 0;
       return;
@@ -972,6 +1105,7 @@ private:
       return;
     }
     active_submap_id_ = best->submap_id;
+    last_retrieval_decision_ = "accept";
     ++switch_count_;
     pending_switch_frames_ = 0;
     if (submap_apply_pose_correction_ && !best->world_pose.empty()) {
@@ -994,9 +1128,23 @@ private:
     return data.str();
   }
 
+  static std::string ids_json(const std::vector<int> & ids)
+  {
+    std::ostringstream data;
+    data << '[';
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      if (i > 0) {
+        data << ',';
+      }
+      data << ids[i];
+    }
+    data << ']';
+    return data.str();
+  }
+
   int active_keyframe_count() const
   {
-    if (submap_mode_ == "global") {
+    if (submap_mode_ == "global" || submap_mode_ == "c0") {
       return static_cast<int>(global_map_.keyframe_ids.size());
     }
     int count = 0;
@@ -1010,7 +1158,7 @@ private:
 
   int active_map_point_count() const
   {
-    if (submap_mode_ == "global") {
+    if (submap_mode_ == "global" || submap_mode_ == "c0") {
       return static_cast<int>(global_map_.map_points.size());
     }
     int count = 0;
@@ -1439,6 +1587,32 @@ private:
          << ",\"submap_mode\":\"" << submap_mode_ << "\""
          << ",\"active_submap\":" << active_submap_id_
          << ",\"candidate_submaps\":" << candidate_ids_json()
+         << ",\"retrieval_method\":\"" << retrieval_method() << "\""
+         << ",\"retrieval_decision\":\"" << last_retrieval_decision_ << "\""
+         << ",\"selected_submap\":" << last_selected_submap_
+         << ",\"candidate_ids\":" << candidate_ids_json()
+         << ",\"candidate_sources\":{\"visual\":" << ids_json(last_visual_source_ids_)
+         << ",\"pose\":" << ids_json(last_pose_source_ids_)
+         << ",\"topology\":" << ids_json(last_topology_source_ids_) << "}"
+         << ",\"candidate_covered\":null"
+         << ",\"coverage_label_available\":false"
+         << ",\"geometry_verified\":" << (last_geometry_verified_ ? "true" : "false")
+         << ",\"geometry_verification_available\":true"
+         << ",\"reprojection_error_px\":" <<
+      (last_candidates_.empty() ? -1.0 : json_number(last_candidates_.front().reprojection_rmse))
+         << ",\"reject_reason\":\"" << last_reject_reason_ << "\""
+         << ",\"visual_reliability\":" << last_visual_reliability_
+         << ",\"pose_reliability\":" << last_pose_reliability_
+         << ",\"topology_reliability\":" << last_topology_reliability_
+         << ",\"evidence_available\":{\"visual\":" <<
+      (retrieval_method() == "c0" ? "false" : "true")
+         << ",\"pose\":" <<
+      ((retrieval_method() == "c4" || retrieval_method() == "p") ? "true" : "false")
+         << ",\"topology\":" <<
+      ((retrieval_method() == "c4" || retrieval_method() == "p") ? "true" : "false") << "}"
+         << ",\"q_top1\":" << last_q_top1_
+         << ",\"q_cov\":null"
+         << ",\"calibration_version\":\"unfitted-v0\""
          << ",\"switch_state\":\"" << switch_state << "\""
          << ",\"visual_score\":" << (last_candidates_.empty() ? 0.0 : last_candidates_.front().visual_score)
          << ",\"pose_score\":" << (last_candidates_.empty() ? 0.0 : last_candidates_.front().pose_score)
@@ -1624,6 +1798,8 @@ private:
   int switch_min_matches_{};
   int switch_min_inliers_{};
   double switch_max_reprojection_px_{};
+  double retrieval_min_probability_{0.50};
+  double retrieval_low_reliability_{0.20};
   int smooth_transition_frames_{};
   bool submap_apply_pose_correction_{false};
   double map_fusion_radius_m_{};
@@ -1668,6 +1844,14 @@ private:
   int smooth_frames_remaining_{0};
   double last_keyframe_distance_{0.0};
   double last_matching_ms_{0.0};
+  double last_visual_reliability_{0.0};
+  double last_pose_reliability_{0.0};
+  double last_topology_reliability_{0.0};
+  double last_q_top1_{0.0};
+  bool last_geometry_verified_{false};
+  int last_selected_submap_{-1};
+  std::string last_retrieval_decision_{"hold"};
+  std::string last_reject_reason_;
   cv::Mat smooth_target_pose_;
   std::optional<cv::Mat> last_keyframe_pose_;
   Submap global_map_;
@@ -1676,6 +1860,9 @@ private:
   cv::Mat global_index_descriptors_;
   std::vector<int> global_index_submap_ids_;
   std::vector<MapMatch> last_candidates_;
+  std::vector<int> last_visual_source_ids_;
+  std::vector<int> last_pose_source_ids_;
+  std::vector<int> last_topology_source_ids_;
   std::vector<TrajectorySample> trajectory_samples_;
   LoopClosure last_loop_closure_;
   cv::Ptr<cv::ORB> orb_;

@@ -2,13 +2,13 @@
 
 本目录是从 `D:\AIview\ROS2-clearRob` 复制出的研究代码备份，当前版本包含：
 
-- `src/visual_slam`：双目视觉里程计、ORB、三角化、PnP/RANSAC、G/S/P 子地图模式；
-- `src/visual_slam_gazebo`：48 m 纹理走廊、双目机器人、视差检查和自动实验器；
+- `src/visual_slam`：双目视觉里程计、ORB、三角化、PnP/RANSAC、C0/C1/C4/P 子地图模式；
+- `src/visual_slam_gazebo`：154 m 纹理走廊、双目机器人、视差检查和自动实验器；
 - `experiments`：已完成的 G/S/P 短测和路线验证数据；
 - `参数可视化图表.html`：固定参数、处理链路、实验分组和短测结果图表；
 - `民航视觉SLAM主线小论文实验流程-子地图修订版.md`：实验计划。
 
-关键固定参数：640 x 480、15 Hz、70 mm 双目基线、处理缩放 0.75、子地图长度 5.0 m、重叠 1.5 m、Top-3 候选、局部窗口 15 帧。
+关键固定参数：640 x 480、15 Hz、70 mm 双目基线、处理缩放 0.75、子地图长度 5.0 m、重叠 1.5 m、视觉/位姿/拓扑候选预算 4/3/2、总预算 10、局部窗口 15 帧。
 
 后续仿真仍在 `D:\AIview\ROS2-clearRob` 的 ROS 2 工作区编译和运行，`D:\科研slam` 用作独立代码备份与研究材料归档。
 
@@ -19,7 +19,7 @@
 - 图像：`640 x 480`，约 `15 Hz`
 - 双目水平基线：`70 mm`
 - 子地图长度：`5.0 m`，重叠：`1.5 m`
-- 子地图模式：`global`、`fixed`、`joint`
+- 正式方法：`c0`、`c1`、`c4`、`p`；兼容旧模式：`global`、`fixed`、`joint`
 
 当前版本保持纯双目视觉方案，不接入 IMU、惯导或其他传感器。`/sim/odom` 只用于仿真真值记录和离线评测，不输入视觉算法，也不参与子地图切换决策。
 
@@ -76,7 +76,16 @@ ros2 launch visual_slam stereo_vo_sim.launch.py
 
 ## 自动实验
 
-统一入口负责仿真重置、速度发布、实验选择、结果保存和分段统计：
+统一项目入口负责项目切换、仿真重置、单实例保护、数据采集、基础分析和轻量归档：
+
+```bash
+python3 src/visual_slam_gazebo/scripts/experiment_manager.py --list-projects
+python3 src/visual_slam_gazebo/scripts/experiment_manager.py \
+  --project c1_c4_p_basic --methods c0 c1 c4 p \
+  --runs 3 --gui --record --analyze --archive
+```
+
+旧 profile 入口继续兼容：
 
 ```bash
 ros2 run visual_slam_gazebo run_experiment_profile.py --list-profiles
@@ -100,6 +109,10 @@ ros2 run visual_slam_gazebo run_experiment_profile.py \
 ```
 
 每次运行会先发送零速度、重置仿真、解除暂停，再启动对应 VO 模式并记录结果。每个实验目录保存 `profile.json`、`campaign_state.json`、`metadata.json`、`resolved_parameters.yaml`、`summary.json` 和分段指标。
+
+详细的冻结实验流程见 `docs/calibrated_submap_experiment_plan.md`。当前
+`ood_rejection` 和 `multi_layout_calibration` 只登记配置且禁止启动，直到独立
+mapping/query 数据生成与扰动注入实现；旧日志不会被补写伪造的覆盖率或校准指标。
 
 分段评测：
 

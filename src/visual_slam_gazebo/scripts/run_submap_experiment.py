@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run repeatable G/S/P submap experiments against a running Gazebo instance.
+"""Run repeatable C0/C1/C4/P submap experiments against a running Gazebo instance.
 
 Use run_experiment_profile.py for the complete campaign workflow, including
 Gazebo startup and service readiness checks.
@@ -13,6 +13,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import threading
 import time
 
 import rclpy
@@ -46,6 +47,46 @@ KEY_PARAMETERS = {
 }
 
 
+class ResourceMonitor:
+    """Sample aggregate CPU and RSS for the VO launch process group."""
+
+    def __init__(self, process, output_path):
+        self.process = process
+        self.output_path = Path(output_path)
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+        self.thread.join(timeout=3.0)
+
+    def run(self):
+        with self.output_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["host_time", "rss_kb", "cpu_percent"])
+            while not self.stop_event.is_set() and self.process.poll() is None:
+                result = subprocess.run(
+                    ["ps", "-o", "rss=,%cpu=", "-g", str(self.process.pid), "--no-headers"],
+                    check=False, capture_output=True, text=True,
+                )
+                rss_kb = 0
+                cpu_percent = 0.0
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if len(fields) >= 2:
+                        try:
+                            rss_kb += int(fields[0])
+                            cpu_percent += float(fields[1])
+                        except ValueError:
+                            continue
+                writer.writerow([time.time(), rss_kb, cpu_percent])
+                handle.flush()
+                self.stop_event.wait(1.0)
+
+
 def stamp_seconds(stamp):
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
@@ -58,6 +99,7 @@ class ExperimentRecorder(Node):
         self.angular = angular
         self.direction = 1.0
         self.active = False
+        self.expected_mode = None
         self.statuses = []
         self.truth_positions = []
         self.visual_positions = []
@@ -89,6 +131,9 @@ class ExperimentRecorder(Node):
         for file_handle in (self.status_file, self.odom_file, self.truth_file):
             if file_handle is not None:
                 file_handle.close()
+        self.status_file = None
+        self.odom_file = None
+        self.truth_file = None
 
     def write_diagnostics(self):
         if not self.statuses or self.output_dir is None:
@@ -99,6 +144,9 @@ class ExperimentRecorder(Node):
             "depth_median_m", "stereo_reprojection_px", "motion_consistency",
             "visual_distance_m", "processing_ms", "matching_ms", "active_map_points",
             "map_points_stable", "tracking_failures",
+            "retrieval_method", "retrieval_decision", "selected_submap",
+            "geometry_verified", "reject_reason", "visual_reliability",
+            "pose_reliability", "topology_reliability", "q_top1", "q_cov",
         ]
         with (self.output_dir / "frame_diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
@@ -123,6 +171,8 @@ class ExperimentRecorder(Node):
             data = json.loads(message.data)
         except json.JSONDecodeError:
             data = {"state": "invalid_json", "raw": message.data}
+        if self.expected_mode is not None and data.get("submap_mode") != self.expected_mode:
+            return
         data["host_time"] = time.time()
         self.statuses.append(data)
         if self.status_file is not None:
@@ -363,6 +413,7 @@ def run_one(node, mode, run, args, root):
     output_dir = root / mode / f"run_{run:02d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     node.statuses.clear()
+    node.expected_mode = mode
     node.direction = 1.0
     node.output_dir = output_dir
     node.open_files()
@@ -381,6 +432,8 @@ def run_one(node, mode, run, args, root):
     node.visual_positions.clear()
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
     process, log_handle = start_vo(mode, output_dir / "stereo_vo_sim.log", map_export_path)
+    resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
+    resource_monitor.start()
     bag_process = None
     bag_log_handle = None
     try:
@@ -424,6 +477,27 @@ def run_one(node, mode, run, args, root):
         (output_dir / "metadata.json").write_text(
             json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"
         )
+        run_manifest = {
+            "project": os.environ.get("EXPERIMENT_PROJECT"),
+            "scene": os.environ.get("EXPERIMENT_SCENE"),
+            "route_m": float(os.environ["EXPERIMENT_ROUTE_M"])
+            if os.environ.get("EXPERIMENT_ROUTE_M") else None,
+            "git_commit": os.environ.get("EXPERIMENT_GIT_COMMIT"),
+            "method": mode,
+            "run": run,
+            "duration_s": args.duration,
+            "command_speed_mps": args.speed,
+            "camera": {"width": 640, "height": 480, "rate_hz": 15, "baseline_m": 0.07},
+            "submap": KEY_PARAMETERS,
+            "calibration_version": os.environ.get(
+                "EXPERIMENT_CALIBRATION_VERSION",
+                node.statuses[-1].get("calibration_version", "unfitted-v0")
+                if node.statuses else "unfitted-v0"),
+            "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        (output_dir / "experiment_manifest.json").write_text(
+            json.dumps(run_manifest, indent=2, ensure_ascii=True), encoding="utf-8"
+        )
         summary = run_summary
         (output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
@@ -434,11 +508,13 @@ def run_one(node, mode, run, args, root):
         node.send_stop()
         stop_process(bag_process)
         stop_process(process)
+        resource_monitor.stop()
         log_handle.close()
         if bag_log_handle is not None:
             bag_log_handle.close()
         node.write_diagnostics()
         node.close_files()
+        node.expected_mode = None
         truth_path = output_dir / "sim_odom.csv"
         if truth_path.exists():
             shutil.copyfile(truth_path, output_dir / "trajectory_truth.csv")
@@ -446,8 +522,9 @@ def run_one(node, mode, run, args, root):
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--modes", nargs="+", choices=["global", "fixed", "joint"],
-                        default=["global", "fixed", "joint"])
+    parser.add_argument("--modes", nargs="+",
+                        choices=["c0", "c1", "c4", "p", "global", "fixed", "joint"],
+                        default=["c0", "c1", "c4", "p"])
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--duration", type=float, default=20.0)
     parser.add_argument("--warmup", type=float, default=3.0)
