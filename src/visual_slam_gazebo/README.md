@@ -269,6 +269,6 @@ python3 /mnt/d/科研slam/src/visual_slam_gazebo/scripts/aggregate_highload_camp
   /mnt/d/科研slam/experiments/formal_highload_60_90_120m_20261009
 ```
 
-该脚本在总目录 `analysis/` 生成跨路线 `highload_summary.csv`\uff0c
+该脚本在总目录 `analysis/` 生成跨路线 `highload_summary.csv`，
 `highload_summary.json` 和 `highload_scaling.png`。单程实验的起终点距离不用作闭合误差；
 120 m 必须另外报告末段失锁率，不应只看平均路径比例。
