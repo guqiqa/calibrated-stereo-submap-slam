@@ -289,7 +289,7 @@ def main():
         "target_actual_speed_mps": profile.get("target_actual_speed_mps"),
         "speed_calibration": "experiments/speed_calibration_20260905.json",
         "angular_radps": args.angular,
-        "scene_model": "136 m maximum scene: up to 120 m evaluation route + approximately 12 m buffer",
+        "scene_model": "154 m maximum scene: 0-120 m evaluation route + approximately 30 m visual buffer",
     }
     (output / "profile.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"

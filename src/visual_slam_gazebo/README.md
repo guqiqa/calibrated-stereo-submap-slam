@@ -2,6 +2,30 @@
 
 独立的 ROS 2 Humble + Gazebo Classic 基础双目视觉 SLAM 仿真包。
 
+## C1/C4/P 子地图检索协议
+
+新方案的严格协议位于 `scripts/submap_retrieval_protocol.py`：`c1` 仅视觉检索
+加几何验证，`c4` 使用固定 `0.50/0.30/0.20` 权重，`p` 使用可靠性门控的对数
+似然融合。协议输出候选集合、覆盖标签可用性、几何验证、拒绝原因、`q_top1`
+和 `q_cov`。旧日志缺少合法子地图标签时，离线评估会保留诊断结果，但将覆盖率、
+ECE、Brier、NLL 和风险-覆盖率标记为 `unavailable`，不会用当前子地图字段推断真值。
+
+回放已有日志：
+
+```bash
+python3 scripts/evaluate_retrieval_protocol.py \
+  --status-root experiments/highload_120m_extended_buffer_smoke_20261010 \
+  --output experiments/highload_120m_extended_buffer_smoke_20261010/retrieval_analysis
+```
+
+运行带独立标签的最小闭环样例：
+
+```bash
+python3 scripts/run_protocol_fixture.py --method p --output /tmp/protocol_status.jsonl
+python3 scripts/evaluate_retrieval_protocol.py --status-root /tmp \
+  --output /tmp/protocol_analysis
+```
+
 ## 构建
 
 ```bash
