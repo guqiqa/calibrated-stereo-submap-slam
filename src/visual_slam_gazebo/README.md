@@ -261,3 +261,14 @@ python3 /mnt/d/科研slam/src/visual_slam_gazebo/scripts/aggregate_campaign.py \
 
 脚本不修改原始 `run_XX` 数据，在 `analysis/` 生成 `campaign_runs.csv`、
 `campaign_summary.json`、`campaign_metrics.png` 和 `campaign_repeatability.png`。默认通过条件为路径比例在 `0.98~1.02`、无跟踪失败和错误子地图切换。
+
+60/90/120 m 多路线 campaign 可使用：
+
+```bash
+python3 /mnt/d/科研slam/src/visual_slam_gazebo/scripts/aggregate_highload_campaign.py \
+  /mnt/d/科研slam/experiments/formal_highload_60_90_120m_20261009
+```
+
+该脚本在总目录 `analysis/` 生成跨路线 `highload_summary.csv`\uff0c
+`highload_summary.json` 和 `highload_scaling.png`。单程实验的起终点距离不用作闭合误差；
+120 m 必须另外报告末段失锁率，不应只看平均路径比例。
