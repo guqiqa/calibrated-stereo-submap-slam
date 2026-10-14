@@ -40,3 +40,26 @@ dataset:
     regular_baseline: 1000
     perturbed_ring: 2000
     asymmetric_extension: 3000
+dataset_profiles:
+  pilot:
+    families: [regular_baseline, perturbed_ring, asymmetric_extension]
+    per_family: 2
+    split_counts:
+      development: 1
+      calibration: 1
+      test: 0
+    seed_bases:
+      regular_baseline: 1000
+      perturbed_ring: 2000
+      asymmetric_extension: 3000
+  full:
+    families: [regular_baseline, perturbed_ring, asymmetric_extension]
+    per_family: 10
+    split_counts:
+      development: 4
+      calibration: 3
+      test: 3
+    seed_bases:
+      regular_baseline: 1000
+      perturbed_ring: 2000
+      asymmetric_extension: 3000

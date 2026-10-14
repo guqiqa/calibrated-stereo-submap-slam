@@ -28,9 +28,21 @@ python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
   --output generated_scenes/topology_dataset_v1
 ```
 
-默认生成 30 个基础布局：每类 10 个，按 4/3/3 划分为 development、calibration、test；
-每个基础布局同时生成 `visual_only` 和 `topology_change` 变体。种子在
-`config/topology_scene_defaults.yaml` 中冻结。正式测试不得改写 test 种子或场景文件。
+默认生成 pilot 数据集：6 个基础布局，每类 2 个，按 1/1/0 划分为 development、
+calibration、test，并为每个基础布局生成 `visual_only` 和 `topology_change` 变体。
+pilot 只用于接口、场景、路线和校准闭环验证，不用于论文最终结论。
+
+正式实验显式使用 full profile：
+
+```bash
+python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
+  --generate-dataset --dataset-profile full \
+  --output generated_scenes/topology_dataset_full_v1
+```
+
+full profile 生成 30 个基础布局，每类 10 个，按 4/3/3 划分为 development、
+calibration、test；每个基础布局同时生成两类障碍变体。种子在
+`config/topology_scene_defaults.yaml` 中冻结，正式测试不得改写 test 种子或场景文件。
 
 ## Gazebo 与实验入口
 

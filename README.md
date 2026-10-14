@@ -84,11 +84,19 @@ python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
   --output generated_scenes/perturbed_ring_2103 --validate --preview
 ```
 
-生成冻结的 30 布局数据集及 60 个障碍变体：
+前置验证默认只生成 6 个基础布局及 12 个障碍变体：
 
 ```bash
 python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
   --generate-dataset --output generated_scenes/topology_dataset_v1
+```
+
+正式实验需要显式生成 30 个基础布局及 60 个障碍变体：
+
+```bash
+python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
+  --generate-dataset --dataset-profile full \
+  --output generated_scenes/topology_dataset_full_v1
 ```
 
 详细格式、实验接入和验证命令见 `docs/topology_scene_generator.md`。

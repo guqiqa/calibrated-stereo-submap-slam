@@ -24,6 +24,8 @@ def parse_args():
     parser.add_argument("--list-families", action="store_true")
     parser.add_argument("--show-config", action="store_true")
     parser.add_argument("--generate-dataset", action="store_true")
+    parser.add_argument("--dataset-profile", choices=("pilot", "full"), default="pilot",
+                        help="Dataset size: pilot generates 6 layouts; full generates the formal set")
     parser.add_argument("--validate", action="store_true")
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--export-rmf", action="store_true")
@@ -53,7 +55,8 @@ def main():
     export_gazebo = args.export_gazebo or not (args.export_rmf or args.export_gazebo)
     preview = args.preview or args.generate_dataset
     if args.generate_dataset:
-        dataset = config["dataset"]
+        datasets = config.get("dataset_profiles", {})
+        dataset = datasets.get(args.dataset_profile, config["dataset"])
         results = []
         for family in dataset["families"]:
             for index in range(int(dataset["per_family"])):
@@ -75,6 +78,7 @@ def main():
                         row["status"] == "passed" and
                         all(item["status"] == "passed" for item in row["variants"].values())
                         for row in results) else "failed",
+                    "dataset_profile": args.dataset_profile,
                     "layout_count": len(results), "layouts": results}
         output_root.mkdir(parents=True, exist_ok=True)
         (output_root / "dataset_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
