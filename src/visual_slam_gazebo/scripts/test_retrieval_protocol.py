@@ -5,6 +5,7 @@ import unittest
 from calibration_metrics import brier_score, ece, nll, risk_coverage_curve
 from fit_calibration_model import (COVERAGE_FEATURE_NAMES, coverage_samples,
                                    fit_logistic, sigmoid)
+from experiment_manager import windows_to_wsl_path
 from submap_retrieval_protocol import (Candidate, Evidence, merge_candidate_sources,
                                        run_c1, run_c4, run_p)
 
@@ -90,6 +91,10 @@ class CalibrationTests(unittest.TestCase):
             {"coverage_features": valid, "candidate_covered": None},
         ]
         self.assertEqual(coverage_samples(rows), [(valid, True)])
+
+    def test_windows_path_conversion_for_wsl_dispatch(self):
+        converted = windows_to_wsl_path(r"D:\科研slam\scene.world")
+        self.assertEqual(converted, "/mnt/d/科研slam/scene.world")
 
 
 if __name__ == "__main__":

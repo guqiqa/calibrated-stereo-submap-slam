@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,6 +17,44 @@ import time
 METHODS = ("c0", "c1", "c4", "p")
 ROUTE_PROFILES = {10: "script_smoke", 45: "main_45m", 60: "highload_60m",
                   90: "highload_90m", 120: "highload_120m"}
+PATH_OPTIONS = {"--config", "--output-root", "--scene-manifest", "--waypoint-route",
+                "--calibration-model", "--dataset-manifest", "--map-database",
+                "--separation-report"}
+
+
+def windows_to_wsl_path(value):
+    raw = str(value)
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", raw)
+    if not match:
+        absolute = str(Path(value).resolve())
+        match = re.match(r"^([A-Za-z]):[\\/](.*)$", absolute)
+    if not match:
+        return value
+    drive, remainder = match.groups()
+    return f"/mnt/{drive.lower()}/{remainder.replace(chr(92), '/')}"
+
+
+def dispatch_windows_to_wsl(argv):
+    """Run the Linux-only ROS/Gazebo workflow when called from PowerShell."""
+    translated = []
+    expect_path = False
+    for value in argv:
+        if expect_path:
+            translated.append(windows_to_wsl_path(value))
+            expect_path = False
+            continue
+        translated.append(value)
+        expect_path = value in PATH_OPTIONS
+    script = windows_to_wsl_path(__file__)
+    root = windows_to_wsl_path(repository_root())
+    python_command = shlex.join(["python3", script, *translated])
+    shell_command = (
+        "source /opt/ros/humble/setup.bash && "
+        f"if [ -f {shlex.quote(root + '/install/setup.bash')} ]; then "
+        f"source {shlex.quote(root + '/install/setup.bash')}; fi && "
+        f"exec {python_command}")
+    distro = os.environ.get("VISUAL_SLAM_WSL_DISTRO", "Ubuntu-22.04")
+    return subprocess.call(["wsl.exe", "-d", distro, "bash", "-lc", shell_command])
 
 
 def repository_root():
@@ -333,4 +373,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        raise SystemExit(dispatch_windows_to_wsl(sys.argv[1:]))
     main()

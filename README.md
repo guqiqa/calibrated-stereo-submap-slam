@@ -38,6 +38,8 @@ D:\科研slam
 ## 环境与构建
 
 推荐在 WSL2 中使用 Ubuntu 22.04、ROS 2 Humble、Gazebo Classic 11、`gazebo_ros`、OpenCV 和 C++17。Windows 路径 `D:\科研slam` 在 WSL 中对应 `/mnt/d/科研slam`。
+`experiment_manager.py` 可直接从 PowerShell 调用；Windows 入口会转换路径并转发到
+`Ubuntu-22.04` WSL。若发行版名称不同，设置 `VISUAL_SLAM_WSL_DISTRO`。
 
 ```bash
 cd /mnt/d/科研slam
