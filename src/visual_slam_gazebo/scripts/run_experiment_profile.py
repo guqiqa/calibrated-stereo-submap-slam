@@ -2,8 +2,10 @@
 """Run a named scale experiment from setup through result archival."""
 
 import argparse
+import csv
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -106,6 +108,8 @@ def parse_args():
                         help="Scene manifest; records scene identity and resolves scene.world")
     parser.add_argument("--waypoint-route", default=None,
                         help="Generated mapping/query route CSV")
+    parser.add_argument("--route-prefix-m", type=float, default=None,
+                        help="Use only a mapping-route prefix of this arc length for smoke tests")
     parser.add_argument("--calibration-model", default=None)
     parser.add_argument("--map-database", default=None)
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
@@ -289,6 +293,30 @@ def main():
     else:
         reverse_after = profile.get("reverse_after_s")
     output.mkdir(parents=True, exist_ok=True)
+    waypoint_route = Path(args.waypoint_route).resolve() if args.waypoint_route else None
+    if args.route_prefix_m is not None:
+        if waypoint_route is None or args.route_prefix_m <= 0.0:
+            raise SystemExit("--route-prefix-m requires a positive --waypoint-route")
+        with waypoint_route.open(newline="", encoding="utf-8") as handle:
+            route_rows = list(csv.DictReader(handle))
+        if not route_rows:
+            raise SystemExit(f"waypoint route is empty: {waypoint_route}")
+        prefix_rows = [route_rows[0]]
+        distance = 0.0
+        for previous, current in zip(route_rows, route_rows[1:]):
+            distance += math.hypot(float(current["x"]) - float(previous["x"]),
+                                   float(current["y"]) - float(previous["y"]))
+            prefix_rows.append(current)
+            if distance >= args.route_prefix_m:
+                break
+        if distance < args.route_prefix_m:
+            raise SystemExit(f"route is shorter than requested prefix: {distance:.2f} m")
+        waypoint_route = output / "smoke_routes" / f"mapping_prefix_{args.route_prefix_m:.1f}m.csv"
+        waypoint_route.parent.mkdir(parents=True, exist_ok=True)
+        with waypoint_route.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(route_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(prefix_rows)
     package_dir = Path(__file__).resolve().parent
     recorder = package_dir / "run_submap_experiment.py"
     command = [
@@ -306,8 +334,8 @@ def main():
         command.extend(["--reverse-after", str(reverse_after)])
     if args.record:
         command.append("--record-bag")
-    if args.waypoint_route:
-        command.extend(["--waypoint-route", str(Path(args.waypoint_route).resolve())])
+    if waypoint_route:
+        command.extend(["--waypoint-route", str(waypoint_route)])
     if args.scene_manifest:
         scene_root = Path(args.scene_manifest).resolve().parent
         command.extend([
@@ -340,8 +368,10 @@ def main():
             "scene_map_version": scene_manifest.get("map_version"),
             "scene_world": str(Path(args.world).resolve()),
         })
-    if args.waypoint_route:
-        metadata["waypoint_route"] = str(Path(args.waypoint_route).resolve())
+    if waypoint_route:
+        metadata["waypoint_route"] = str(waypoint_route)
+        if args.route_prefix_m is not None:
+            metadata["route_prefix_m"] = args.route_prefix_m
     (output / "profile.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"
     )

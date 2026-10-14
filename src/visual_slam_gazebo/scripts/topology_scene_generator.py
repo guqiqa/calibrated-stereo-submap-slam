@@ -118,7 +118,9 @@ class TopologyScene:
 
     @property
     def map_version(self):
-        return f"{self.family}-{self.seed}-{self.obstacle_mode}-heterogeneous-v2"
+        asset_version = self.parameters["visual"].get("asset_version", "legacy")
+        return (f"{self.family}-{self.seed}-{self.obstacle_mode}-heterogeneous-v2-"
+                f"visual-{asset_version}")
 
     def _resolve_parameters(self):
         geometry = dict(self.config["geometry"])

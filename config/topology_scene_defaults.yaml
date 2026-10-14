@@ -26,8 +26,9 @@ submaps:
   max_overflow_fraction: 0.05
   overlap_ratios: [0.2, 0.3, 0.4]
 visual:
+  asset_version: dense-v1
   texture_repeat_ratio: 0.65
-  stable_feature_spacing_m: 12.0
+  stable_feature_spacing_m: 4.0
   repeated_group_period: 4
 obstacles:
   visual_only_count: 8
