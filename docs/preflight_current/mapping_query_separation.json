@@ -1,0 +1,525 @@
+{
+  "status": "failed",
+  "thresholds": {
+    "time_s": 5.0,
+    "space_m": 2.0,
+    "view_deg": 30.0
+  },
+  "capture_time_separation_s": 10.0,
+  "routes": [
+    {
+      "route": "D:\\\u79d1\u7814slam\\generated_scenes\\topology_dataset_pilot_v1\\development\\regular_baseline_1000\\query_routes\\query_normal_01.csv",
+      "waypoints": 117,
+      "failed": 117,
+      "examples": [
+        {
+          "waypoint": 0,
+          "nearest_mapping_waypoint": 697,
+          "space_m": 0.15000000000000002,
+          "view_deg": 90.00000000000001
+        },
+        {
+          "waypoint": 1,
+          "nearest_mapping_waypoint": 1,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 2,
+          "nearest_mapping_waypoint": 2,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 3,
+          "nearest_mapping_waypoint": 3,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 4,
+          "nearest_mapping_waypoint": 4,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 5,
+          "nearest_mapping_waypoint": 5,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 6,
+          "nearest_mapping_waypoint": 6,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 7,
+          "nearest_mapping_waypoint": 7,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 8,
+          "nearest_mapping_waypoint": 8,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 9,
+          "nearest_mapping_waypoint": 9,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 10,
+          "nearest_mapping_waypoint": 10,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 11,
+          "nearest_mapping_waypoint": 11,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 12,
+          "nearest_mapping_waypoint": 12,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 13,
+          "nearest_mapping_waypoint": 13,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 14,
+          "nearest_mapping_waypoint": 14,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 15,
+          "nearest_mapping_waypoint": 15,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 16,
+          "nearest_mapping_waypoint": 16,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 17,
+          "nearest_mapping_waypoint": 17,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 18,
+          "nearest_mapping_waypoint": 18,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 19,
+          "nearest_mapping_waypoint": 19,
+          "space_m": 0.35,
+          "view_deg": 0.0
+        }
+      ]
+    },
+    {
+      "route": "D:\\\u79d1\u7814slam\\generated_scenes\\topology_dataset_pilot_v1\\development\\regular_baseline_1000\\query_routes\\query_reverse_ring.csv",
+      "waypoints": 465,
+      "failed": 465,
+      "examples": [
+        {
+          "waypoint": 0,
+          "nearest_mapping_waypoint": 464,
+          "space_m": 0.3500000000000014,
+          "view_deg": 90.00000000000001
+        },
+        {
+          "waypoint": 1,
+          "nearest_mapping_waypoint": 463,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 2,
+          "nearest_mapping_waypoint": 462,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 3,
+          "nearest_mapping_waypoint": 461,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 4,
+          "nearest_mapping_waypoint": 460,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 5,
+          "nearest_mapping_waypoint": 459,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 6,
+          "nearest_mapping_waypoint": 458,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 7,
+          "nearest_mapping_waypoint": 457,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 8,
+          "nearest_mapping_waypoint": 456,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 9,
+          "nearest_mapping_waypoint": 455,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 10,
+          "nearest_mapping_waypoint": 454,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 11,
+          "nearest_mapping_waypoint": 453,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 12,
+          "nearest_mapping_waypoint": 452,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 13,
+          "nearest_mapping_waypoint": 451,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 14,
+          "nearest_mapping_waypoint": 450,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 15,
+          "nearest_mapping_waypoint": 449,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 16,
+          "nearest_mapping_waypoint": 448,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 17,
+          "nearest_mapping_waypoint": 447,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 18,
+          "nearest_mapping_waypoint": 446,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 19,
+          "nearest_mapping_waypoint": 445,
+          "space_m": 0.3500000000000014,
+          "view_deg": 180.0
+        }
+      ]
+    },
+    {
+      "route": "D:\\\u79d1\u7814slam\\generated_scenes\\topology_dataset_pilot_v1\\development\\regular_baseline_1000\\query_routes\\query_cross_hall.csv",
+      "waypoints": 185,
+      "failed": 185,
+      "examples": [
+        {
+          "waypoint": 0,
+          "nearest_mapping_waypoint": 1063,
+          "space_m": 0.14999999999999858,
+          "view_deg": 90.0
+        },
+        {
+          "waypoint": 1,
+          "nearest_mapping_waypoint": 1065,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 2,
+          "nearest_mapping_waypoint": 1066,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 3,
+          "nearest_mapping_waypoint": 1067,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 4,
+          "nearest_mapping_waypoint": 1068,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 5,
+          "nearest_mapping_waypoint": 1069,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 6,
+          "nearest_mapping_waypoint": 1070,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 7,
+          "nearest_mapping_waypoint": 1071,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 8,
+          "nearest_mapping_waypoint": 1072,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 9,
+          "nearest_mapping_waypoint": 1073,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 10,
+          "nearest_mapping_waypoint": 1074,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 11,
+          "nearest_mapping_waypoint": 1075,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 12,
+          "nearest_mapping_waypoint": 1076,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 13,
+          "nearest_mapping_waypoint": 1077,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 14,
+          "nearest_mapping_waypoint": 1078,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 15,
+          "nearest_mapping_waypoint": 1079,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 16,
+          "nearest_mapping_waypoint": 1080,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 17,
+          "nearest_mapping_waypoint": 1081,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 18,
+          "nearest_mapping_waypoint": 1082,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        },
+        {
+          "waypoint": 19,
+          "nearest_mapping_waypoint": 1083,
+          "space_m": 0.3500000000000014,
+          "view_deg": 0.0
+        }
+      ]
+    },
+    {
+      "route": "D:\\\u79d1\u7814slam\\generated_scenes\\topology_dataset_pilot_v1\\development\\regular_baseline_1000\\query_routes\\query_cold_start.csv",
+      "waypoints": 59,
+      "failed": 59,
+      "examples": [
+        {
+          "waypoint": 0,
+          "nearest_mapping_waypoint": 59,
+          "space_m": 0.15000000000000002,
+          "view_deg": 90.0
+        },
+        {
+          "waypoint": 1,
+          "nearest_mapping_waypoint": 57,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 2,
+          "nearest_mapping_waypoint": 56,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 3,
+          "nearest_mapping_waypoint": 55,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 4,
+          "nearest_mapping_waypoint": 54,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 5,
+          "nearest_mapping_waypoint": 53,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 6,
+          "nearest_mapping_waypoint": 52,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 7,
+          "nearest_mapping_waypoint": 51,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 8,
+          "nearest_mapping_waypoint": 50,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 9,
+          "nearest_mapping_waypoint": 49,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 10,
+          "nearest_mapping_waypoint": 48,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 11,
+          "nearest_mapping_waypoint": 47,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 12,
+          "nearest_mapping_waypoint": 46,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 13,
+          "nearest_mapping_waypoint": 45,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 14,
+          "nearest_mapping_waypoint": 44,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 15,
+          "nearest_mapping_waypoint": 43,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 16,
+          "nearest_mapping_waypoint": 42,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 17,
+          "nearest_mapping_waypoint": 41,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 18,
+          "nearest_mapping_waypoint": 40,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        },
+        {
+          "waypoint": 19,
+          "nearest_mapping_waypoint": 39,
+          "space_m": 0.35,
+          "view_deg": 180.0
+        }
+      ]
+    },
+    {
+      "route": "D:\\\u79d1\u7814slam\\generated_scenes\\topology_dataset_pilot_v1\\development\\regular_baseline_1000\\query_routes\\query_none_of_the_above.csv",
+      "waypoints": 12,
+      "failed": 0,
+      "examples": []
+    }
+  ]
+}

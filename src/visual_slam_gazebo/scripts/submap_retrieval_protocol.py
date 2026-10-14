@@ -16,6 +16,22 @@ WEIGHTS_C4 = {"visual": 0.50, "pose": 0.30, "topology": 0.20}
 DEFAULT_BUDGET = {"visual": 4, "pose": 3, "topology": 2, "total": 10}
 
 
+def merge_candidate_sources(visual, pose, topology, current=None, budget=DEFAULT_BUDGET):
+    """Build the frozen round-robin union without changing per-source quotas."""
+    sources = [list(visual)[:budget["visual"]], list(pose)[:budget["pose"]],
+               list(topology)[:budget["topology"]]]
+    result = []
+    for rank in range(max((len(source) for source in sources), default=0)):
+        for source in sources:
+            if rank < len(source) and source[rank] not in result:
+                result.append(source[rank])
+                if len(result) == budget["total"]:
+                    return result
+    if current is not None and current not in result and len(result) < budget["total"]:
+        result.append(current)
+    return result
+
+
 @dataclass(frozen=True)
 class Evidence:
     available: bool
@@ -103,7 +119,7 @@ def _decision(method: str, candidates: list[Candidate], probabilities: list[floa
     candidate = candidates[top]
     geometry_ok = _geometry_ok(candidate, min_inliers, max_reprojection_px)
     top_probability = probabilities[top]
-    q_cov = (top_probability if candidate_covered is True else None)
+    q_cov = top_probability
     if method == "p" and all(e.reliability < low_reliability for e in evidences.values() if e.available):
         return Decision(method, "relocalize", None, [c.submap_id for c in candidates],
                         candidate_covered, top_probability, q_cov,
@@ -183,10 +199,9 @@ def run_p(candidates: list[Candidate], visual: Evidence, pose: Evidence,
     evidences = {"visual": visual, "pose": pose, "topology": topology}
     available = {key: value for key, value in evidences.items() if value.available}
     if not available:
-        return _decision("p", candidates, [1.0 / len(candidates)] * len(candidates) if candidates else [],
-                         evidences, candidate_covered=candidate_covered,
-                         min_probability=min_probability, min_inliers=min_inliers,
-                         max_reprojection_px=max_reprojection_px, low_reliability=low_reliability)
+        return Decision("p", "relocalize", None, [c.submap_id for c in candidates],
+                        candidate_covered, None, None, "all_evidence_unavailable", False,
+                        {key: False for key in evidences})
     if all(value.reliability < low_reliability for value in available.values()):
         return Decision("p", "relocalize", None, [c.submap_id for c in candidates],
                         candidate_covered, None, None, "all_evidence_low_reliability", False,

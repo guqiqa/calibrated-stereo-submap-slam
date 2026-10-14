@@ -10,6 +10,16 @@
 和 `q_cov`。旧日志缺少合法子地图标签时，离线评估会保留诊断结果，但将覆盖率、
 ECE、Brier、NLL 和风险-覆盖率标记为 `unavailable`，不会用当前子地图字段推断真值。
 
+正式实验前运行 `scripts/preflight_experiment_check.py`。生成场景运行会加载
+`scene_manifest.json` 和 `submaps.json`，并输出显式的 `runtime_id -> scene_id`
+映射。合法子地图集合由实验记录器旁路标注，不进入在线检索。
+
+Pilot 批处理默认覆盖 normal、reverse ring、cross hall、cold start 和
+none-of-the-above 五类路线。`scripts/fit_calibration_model.py` 先以
+`--stage reliability` 拟合证据可靠性；加载该模型重跑 calibration query 后，再用
+`--stage confidence --base-model <stage-1 model>` 拟合温度和 coverage 概率。
+只有 `stage=confidence` 的冻结模型可产生正式 ECE/Brier/NLL。Pilot 模型只用于验证链路。
+
 统一自动化入口使用根目录的 `config/experiment_profiles.yaml`。该文件采用 JSON
 兼容的 YAML 子集，因此不依赖 PyYAML：
 

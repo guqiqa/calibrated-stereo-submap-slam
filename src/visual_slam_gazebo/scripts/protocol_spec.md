@@ -39,15 +39,33 @@ missing.
 - Legacy aliases remain readable: `global -> c0`, `joint -> c4`; `fixed` remains
   `legacy_fixed` and is not silently renamed to C1.
 
-The online node always publishes `candidate_covered: null` and
-`coverage_label_available: false`. Independent mapping/query ground truth is joined
-offline. `/sim/odom` must never feed the online selector.
+The online node publishes scene-space candidate IDs but always leaves
+`candidate_covered: null` and `coverage_label_available: false`. The experiment
+recorder joins `/sim/odom` with `submaps.json` in an evaluation side channel and
+writes `legal_submaps`, `candidate_covered`, `top1_correct`, and a coverage reason.
+These annotations must never feed the online selector.
+
+Candidate support is the deterministic round-robin union of `Cv(4)`, `Cp(3)`,
+`Cg(2)`, and the current submap, capped at `K=10`. C1 ranks this common support
+using visual evidence only; C4 uses fixed weights; P uses calibrated reliability
+gates and log-likelihood fusion.
+
+Calibration metrics are separated by meaning: `q_top1` is evaluated against
+`top1_correct`, while `q_cov` is evaluated against `candidate_covered`. Using the
+coverage label as the Top-1 label is prohibited.
+
+Formal query runs must use `map_database_mode=load` with a database produced by
+an independent `mapping_route` run in `map_database_mode=build`. Query runs keep
+that database frozen; online keyframes may support VO but cannot mutate the loaded
+retrieval map.
 
 ## Rejection vocabulary
 
 The stable reasons are `candidate_set_empty`, `visual_evidence_unavailable`,
 `geometry_verification_failed`, `low_calibrated_confidence`, and
-`all_evidence_low_reliability`. Empty rejection text means no rejection occurred.
+`all_evidence_low_reliability`. Smoke runs without a frozen confidence model use
+`low_retrieval_confidence` instead of claiming calibrated confidence. Empty rejection
+text means no rejection occurred.
 
 The labeled fixture can be used to validate the complete file contract:
 

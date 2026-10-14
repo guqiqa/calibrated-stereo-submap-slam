@@ -45,6 +45,10 @@ stereo_vo_sim:
     submap_length_m: 5.0
     submap_overlap_m: 1.5
     candidate_count: 3
+    visual_candidate_count: 4
+    pose_candidate_count: 3
+    topology_candidate_count: 2
+    total_candidate_count: 10
     representative_keyframes: 3
     local_window_keyframes: 15
     keyframe_distance_m: 0.3
@@ -58,3 +62,10 @@ stereo_vo_sim:
     smooth_transition_frames: 5
     submap_apply_pose_correction: false
     map_fusion_radius_m: 0.10
+    scene_manifest_path: ""
+    submap_truth_path: ""
+    candidate_label_path: ""
+    online_submap_id_mode: distance
+    calibration_model_path: ""
+    map_database_path: ""
+    map_database_mode: online

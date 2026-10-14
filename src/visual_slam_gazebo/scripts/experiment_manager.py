@@ -59,6 +59,15 @@ def parse_args():
                         help="Generated scene_manifest.json; resolves scene.world")
     parser.add_argument("--waypoint-route", default=None,
                         help="Generated route CSV; overrides the project route")
+    parser.add_argument("--calibration-model", default=None,
+                        help="Frozen calibration_model.json used by method P")
+    parser.add_argument("--preflight", action="store_true",
+                        help="require the formal Gate A-D preflight to pass after analysis")
+    parser.add_argument("--dataset-manifest", default=None,
+                        help="frozen full dataset manifest used by formal preflight")
+    parser.add_argument("--map-database", default=None)
+    parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
+    parser.add_argument("--separation-report", default=None)
     return parser.parse_args()
 
 
@@ -159,6 +168,20 @@ def main():
     if args.scenario and args.scenario != profile.get("scene"):
         raise SystemExit(f"scenario {args.scenario} does not match configured scene {profile.get('scene')}")
     methods = args.methods or profile["methods"]
+    calibration_model = Path(args.calibration_model).resolve() if args.calibration_model else None
+    map_database = Path(args.map_database).resolve() if args.map_database else None
+    if args.map_database_mode in {"build", "load"} and map_database is None:
+        raise SystemExit("map database build/load mode requires --map-database")
+    if args.map_database_mode == "load" and not map_database.exists():
+        raise SystemExit(f"map database does not exist: {map_database}")
+    if calibration_model and not calibration_model.exists():
+        raise SystemExit(f"calibration model does not exist: {calibration_model}")
+    if profile.get("require_calibrated_p") and "p" in methods and calibration_model is None:
+        raise SystemExit("this profile requires --calibration-model when method P is selected")
+    calibration_version = profile.get("calibration_version", "unfitted-v0")
+    if calibration_model:
+        calibration_version = json.loads(calibration_model.read_text(encoding="utf-8")).get(
+            "version", "unknown")
     runs = args.runs or int(profile["runs"])
     if runs < 1:
         raise SystemExit("runs must be >= 1")
@@ -195,7 +218,12 @@ def main():
         "project": args.project, "scene": profile["scene"], "scenario_seed": profile.get("scene_seed", 0),
         "methods": methods, "runs": runs, "routes": route_jobs(profile), "speed_mps": profile["speed_mps"],
         "query_mode": profile.get("query_mode"), "record_bag": record, "gui": gui,
-        "calibration_version": profile.get("calibration_version", "unfitted-v0"),
+        "calibration_version": calibration_version,
+        "calibration_model": str(calibration_model) if calibration_model else None,
+        "calibration_model_sha256": sha256(calibration_model) if calibration_model else None,
+        "map_database": str(map_database) if map_database else None,
+        "map_database_mode": args.map_database_mode,
+        "map_database_sha256": sha256(map_database) if map_database and map_database.exists() else None,
         "camera": {"width": 640, "height": 480, "rate_hz": 15, "baseline_m": 0.07},
         "submap": {"length_m": 5.0, "overlap_m": 1.5, "visual_budget": 4,
                    "pose_budget": 3, "topology_budget": 2, "total_budget": 10},
@@ -234,6 +262,11 @@ def main():
                 if not waypoint_path.exists():
                     raise SystemExit(f"waypoint route does not exist: {waypoint_path}")
                 command.extend(["--waypoint-route", str(waypoint_path)])
+            if calibration_model:
+                command.extend(["--calibration-model", str(calibration_model)])
+            if map_database:
+                command.extend(["--map-database", str(map_database),
+                                "--map-database-mode", args.map_database_mode])
             if profile.get("command_speed_mps") is not None:
                 command.extend(["--speed", str(profile["command_speed_mps"])])
             command.append("--gui" if gui else "--no-gui")
@@ -259,6 +292,17 @@ def main():
             update_state(state_path, "analyzing", project=args.project)
             subprocess.run([sys.executable, str(analyzer), str(output),
                             "--route-m", str(max(route for route, _ in route_jobs(profile)))], cwd=root, check=True)
+        if args.preflight:
+            preflight = root / "src" / "visual_slam_gazebo" / "scripts" / "preflight_experiment_check.py"
+            command = [sys.executable, str(preflight), "--repo", str(root),
+                       "--status-root", str(output), "--output", str(output / "analysis" / "preflight")]
+            if calibration_model:
+                command.extend(["--calibration-model", str(calibration_model)])
+            if args.dataset_manifest:
+                command.extend(["--dataset-manifest", str(Path(args.dataset_manifest).resolve())])
+            if args.separation_report:
+                command.extend(["--separation-report", str(Path(args.separation_report).resolve())])
+            subprocess.run(command, cwd=root, check=True)
         archive_path = None
         if args.archive:
             update_state(state_path, "archiving", project=args.project)

@@ -1,0 +1,110 @@
+{
+  "formal_test_ready": false,
+  "gate_status": {
+    "A_code_protocol": true,
+    "B_pilot_runtime": false,
+    "C_labels_calibration": false,
+    "D_formal_test_freeze": false
+  },
+  "gates": {
+    "A_code_protocol": [
+      {
+        "name": "scene ID interface",
+        "status": "passed",
+        "detail": "node exposes explicit runtime-to-scene ID alignment",
+        "critical": true
+      },
+      {
+        "name": "fixed candidate quotas",
+        "status": "passed",
+        "detail": "Kv=4, Kp=3, Kg=2 and deterministic merge are present",
+        "critical": true
+      },
+      {
+        "name": "no online truth subscription",
+        "status": "passed",
+        "detail": "visual node source must not subscribe to simulation truth",
+        "critical": true
+      }
+    ],
+    "B_pilot_runtime": [
+      {
+        "name": "C1/C4/P observed",
+        "status": "passed",
+        "detail": "observed methods: ['c1', 'c4', 'p']",
+        "critical": true
+      },
+      {
+        "name": "six pilot layouts",
+        "status": "failed",
+        "detail": "observed 1 scene/map versions",
+        "critical": true
+      },
+      {
+        "name": "five query protocols",
+        "status": "failed",
+        "detail": "observed routes: ['query_normal_01']",
+        "critical": true
+      },
+      {
+        "name": "obstacle variant",
+        "status": "failed",
+        "detail": "observed obstacle versions: []",
+        "critical": true
+      },
+      {
+        "name": "independent frozen mapping",
+        "status": "failed",
+        "detail": "query manifests using map_database_mode=load: 0/3",
+        "critical": true
+      },
+      {
+        "name": "mapping/query separation",
+        "status": "failed",
+        "detail": "status=failed",
+        "critical": true
+      },
+      {
+        "name": "tracking continuity",
+        "status": "passed",
+        "detail": "rows=272, max consecutive failures=0",
+        "critical": true
+      }
+    ],
+    "C_labels_calibration": [
+      {
+        "name": "coverage labels complete",
+        "status": "passed",
+        "detail": "263/263 evaluable rows labeled",
+        "critical": true
+      },
+      {
+        "name": "common ID space",
+        "status": "passed",
+        "detail": "candidate and legal IDs must both be scene strings",
+        "critical": true
+      },
+      {
+        "name": "calibration frozen",
+        "status": "failed",
+        "detail": "no calibration model supplied",
+        "critical": true
+      },
+      {
+        "name": "q_top1/q_cov available",
+        "status": "failed",
+        "detail": "both probabilities are required on every evaluable frame",
+        "critical": true
+      }
+    ],
+    "D_formal_test_freeze": [
+      {
+        "name": "full test dataset frozen",
+        "status": "failed",
+        "detail": "no full dataset manifest supplied",
+        "critical": true
+      }
+    ]
+  },
+  "note": "mapping/query 5 s, 2 m and 30 degree separation requires frame-level post-run validation"
+}

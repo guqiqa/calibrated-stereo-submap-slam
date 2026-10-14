@@ -106,6 +106,9 @@ def parse_args():
                         help="Scene manifest; records scene identity and resolves scene.world")
     parser.add_argument("--waypoint-route", default=None,
                         help="Generated mapping/query route CSV")
+    parser.add_argument("--calibration-model", default=None)
+    parser.add_argument("--map-database", default=None)
+    parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     return parser.parse_args()
 
 
@@ -305,6 +308,18 @@ def main():
         command.append("--record-bag")
     if args.waypoint_route:
         command.extend(["--waypoint-route", str(Path(args.waypoint_route).resolve())])
+    if args.scene_manifest:
+        scene_root = Path(args.scene_manifest).resolve().parent
+        command.extend([
+            "--scene-manifest", str(Path(args.scene_manifest).resolve()),
+            "--submap-truth", str(scene_root / "submaps.json"),
+            "--candidate-label", str(scene_root / "candidate_ground_truth.jsonl"),
+        ])
+    if args.calibration_model:
+        command.extend(["--calibration-model", str(Path(args.calibration_model).resolve())])
+    if args.map_database:
+        command.extend(["--map-database", str(Path(args.map_database).resolve()),
+                        "--map-database-mode", args.map_database_mode])
     metadata = {
         "profile": args.profile,
         "route_m": profile["route_m"],

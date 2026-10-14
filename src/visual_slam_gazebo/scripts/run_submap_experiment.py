@@ -7,6 +7,7 @@ Gazebo startup and service readiness checks.
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from gazebo_msgs.msg import EntityState
 from gazebo_msgs.srv import SetEntityState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import Image
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from std_msgs.msg import String
@@ -40,6 +42,10 @@ KEY_PARAMETERS = {
     "submap_length_m": 5.0,
     "submap_overlap_m": 1.5,
     "candidate_count": 3,
+    "visual_candidate_count": 4,
+    "pose_candidate_count": 3,
+    "topology_candidate_count": 2,
+    "total_candidate_count": 10,
     "representative_keyframes": 3,
     "local_window_keyframes": 15,
     "keyframe_distance_m": 0.3,
@@ -97,8 +103,16 @@ def stamp_seconds(stamp):
     return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
 
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 class ExperimentRecorder(Node):
-    def __init__(self, output_dir, speed, angular, waypoint_route=None):
+    def __init__(self, output_dir, speed, angular, waypoint_route=None, submap_truth=None):
         super().__init__("submap_experiment_recorder")
         self.output_dir = Path(output_dir)
         self.speed = speed
@@ -108,10 +122,13 @@ class ExperimentRecorder(Node):
         self.waypoint_route = waypoint_route
         self.waypoint_plan = None
         self.latest_truth_pose = None
+        self.submap_regions = self.load_submap_regions(submap_truth)
         self.expected_mode = None
         self.statuses = []
         self.truth_positions = []
         self.visual_positions = []
+        self.left_image_stamps = []
+        self.right_image_stamps = []
         self.status_file = None
         self.odom_file = None
         self.truth_file = None
@@ -120,14 +137,53 @@ class ExperimentRecorder(Node):
         self.create_subscription(String, "/visual_slam/status_sim", self.status_callback, qos)
         self.create_subscription(Odometry, "/visual_slam/odometry_sim", self.odom_callback, qos)
         self.create_subscription(Odometry, "/sim/odom", self.truth_callback, qos)
+        self.create_subscription(Image, "/sim/left/image_raw", self.left_image_callback, qos)
+        self.create_subscription(Image, "/sim/right/image_raw", self.right_image_callback, qos)
         self.create_timer(0.05, self.publish_command)
         self.reset_client = self.create_client(Empty, "/reset_world")
         self.unpause_client = self.create_client(Empty, "/unpause_physics")
         self.set_entity_client = self.create_client(SetEntityState, "/set_entity_state")
 
+    @staticmethod
+    def load_submap_regions(path):
+        if not path:
+            return []
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        regions = []
+        for item in payload.get("submaps", []):
+            geometry = item.get("geometry", {})
+            if geometry.get("type") != "Polygon" or not geometry.get("coordinates"):
+                raise ValueError(f"unsupported submap geometry for {item.get('id')}")
+            regions.append((item["id"], geometry["coordinates"][0]))
+        if not regions:
+            raise ValueError(f"no submap regions in {path}")
+        return regions
+
+    @staticmethod
+    def point_in_polygon(x, y, polygon):
+        inside = False
+        j = len(polygon) - 1
+        for i, point in enumerate(polygon):
+            xi, yi = point[:2]
+            xj, yj = polygon[j][:2]
+            if ((yi > y) != (yj > y) and
+                    x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def legal_submaps_at_truth(self):
+        if not self.submap_regions or self.latest_truth_pose is None:
+            return None
+        x, y, _ = self.latest_truth_pose
+        return [submap_id for submap_id, polygon in self.submap_regions
+                if self.point_in_polygon(x, y, polygon)]
+
     def open_files(self):
         self.truth_positions.clear()
         self.visual_positions.clear()
+        self.left_image_stamps.clear()
+        self.right_image_stamps.clear()
         self.status_file = (self.output_dir / "status.jsonl").open("w", encoding="utf-8")
         self.odom_file = (self.output_dir / "visual_odom.csv").open("w", newline="", encoding="utf-8")
         self.truth_file = (self.output_dir / "sim_odom.csv").open("w", newline="", encoding="utf-8")
@@ -157,11 +213,37 @@ class ExperimentRecorder(Node):
             "retrieval_method", "retrieval_decision", "selected_submap",
             "geometry_verified", "reject_reason", "visual_reliability",
             "pose_reliability", "topology_reliability", "q_top1", "q_cov",
+            "candidate_covered", "top1_correct", "coverage_label_available",
+            "candidate_coverage_reason", "none_of_the_above",
         ]
         with (self.output_dir / "frame_diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(self.statuses)
+        label_fields = ["host_time", "scene_id", "map_version", "retrieval_method",
+                        "candidate_ids", "legal_submaps", "candidate_covered",
+                        "top1_correct", "coverage_label_available",
+                        "candidate_coverage_reason", "none_of_the_above", "q_top1", "q_cov"]
+        with (self.output_dir / "candidate_labels.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=label_fields, extrasaction="ignore")
+            writer.writeheader()
+            for row in self.statuses:
+                writer.writerow({key: json.dumps(row.get(key), ensure_ascii=True)
+                                 if isinstance(row.get(key), (list, dict)) else row.get(key)
+                                 for key in label_fields})
+        geometry_fields = ["host_time", "retrieval_method", "selected_scene_submap",
+                           "geometry_verified", "reprojection_error_px", "valid_matches",
+                           "pnp_inliers", "reject_reason"]
+        with (self.output_dir / "geometry_verification.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=geometry_fields, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(self.statuses)
+        with (self.output_dir / "reject_reasons.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["host_time", "retrieval_method", "reject_reason"])
+            writer.writeheader()
+            for row in self.statuses:
+                if row.get("reject_reason"):
+                    writer.writerow({key: row.get(key) for key in writer.fieldnames})
 
     def publish_command(self):
         message = Twist()
@@ -186,6 +268,23 @@ class ExperimentRecorder(Node):
             data = {"state": "invalid_json", "raw": message.data}
         if self.expected_mode is not None and data.get("submap_mode") != self.expected_mode:
             return
+        legal = self.legal_submaps_at_truth()
+        candidates = data.get("candidate_ids") or []
+        data["evaluation_eligible"] = data.get("state") == "tracking" and bool(candidates)
+        if legal is None:
+            data.update(candidate_covered=None, top1_correct=None,
+                        coverage_label_available=False,
+                        candidate_coverage_reason="truth_pose_or_submap_regions_unavailable")
+        else:
+            legal_set = set(legal)
+            data["legal_submaps"] = legal
+            data["none_of_the_above"] = not legal
+            data["candidate_covered"] = bool(legal_set.intersection(candidates)) if legal else False
+            data["top1_correct"] = bool(candidates and candidates[0] in legal_set) if legal else False
+            data["coverage_label_available"] = True
+            data["candidate_coverage_reason"] = (
+                "none_of_the_above" if not legal else
+                "covered" if data["candidate_covered"] else "candidate_coverage_miss")
         data["host_time"] = time.time()
         self.statuses.append(data)
         if self.status_file is not None:
@@ -230,6 +329,14 @@ class ExperimentRecorder(Node):
         )
         if self.truth_file is not None:
             self.write_odom(self.truth_writer, message, received_at)
+
+    def left_image_callback(self, message):
+        if self.active:
+            self.left_image_stamps.append(stamp_seconds(message.header.stamp))
+
+    def right_image_callback(self, message):
+        if self.active:
+            self.right_image_stamps.append(stamp_seconds(message.header.stamp))
 
     def reset_simulation(self):
         self.active = False
@@ -292,11 +399,25 @@ def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
         return True
 
 
-def start_vo(mode, log_path, map_export_path=None, initial_pose=None):
+def start_vo(mode, log_path, map_export_path=None, initial_pose=None,
+             scene_manifest=None, submap_truth=None, candidate_label=None,
+             calibration_model=None, map_database=None, map_database_mode="online"):
     log_handle = log_path.open("w", encoding="utf-8")
     launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py", f"submap_mode:={mode}"]
     if map_export_path is not None:
         launch_args.append(f"map_export_path:={map_export_path}")
+    if scene_manifest and submap_truth:
+        launch_args.extend([
+            f"scene_manifest_path:={scene_manifest}",
+            f"submap_truth_path:={submap_truth}",
+            f"candidate_label_path:={candidate_label or ''}",
+            "online_submap_id_mode:=scene",
+        ])
+    if calibration_model:
+        launch_args.append(f"calibration_model_path:={calibration_model}")
+    if map_database:
+        launch_args.extend([f"map_database_path:={map_database}",
+                            f"map_database_mode:={map_database_mode}"])
     if initial_pose is not None:
         base_x, base_y, yaw = initial_pose
         camera_x = base_x + math.cos(yaw) * 0.08 - math.sin(yaw) * 0.035
@@ -428,6 +549,15 @@ def summarize(node, mode, run, duration, speed, angular):
     if len(node.truth_positions) >= 2:
         truth_closure_error = ((node.truth_positions[-1][1] - node.truth_positions[0][1]) ** 2 +
                                (node.truth_positions[-1][2] - node.truth_positions[0][2]) ** 2) ** 0.5
+    eligible = [item for item in node.statuses if item.get("evaluation_eligible")]
+    evaluable = [item for item in eligible if item.get("coverage_label_available")]
+    def stream_stats(stamps):
+        gaps = [right - left for left, right in zip(stamps, stamps[1:]) if right > left]
+        elapsed = stamps[-1] - stamps[0] if len(stamps) > 1 else 0.0
+        return {"samples": len(stamps), "rate_hz": ((len(stamps) - 1) / elapsed if elapsed > 0 else 0.0),
+                "max_gap_s": max(gaps, default=None)}
+    left_stats = stream_stats(node.left_image_stamps)
+    right_stats = stream_stats(node.right_image_stamps)
     return {
         "mode": mode,
         "run": run,
@@ -457,6 +587,16 @@ def summarize(node, mode, run, duration, speed, angular):
         "max_consecutive_tracking_failures": max_consecutive_failures(states),
         "loop_closure_events": sum(item.get("loop_closure_accepted", 0) == 1 for item in node.statuses),
         "loop_closure_corrections": last.get("loop_closure_count", 0),
+        "coverage_label_available_fraction": len(evaluable) / len(eligible) if eligible else 0.0,
+        "candidate_coverage_rate": (sum(bool(item.get("candidate_covered")) for item in evaluable) /
+                                    len(evaluable) if evaluable else None),
+        "q_top1_valid_fraction": (sum(item.get("q_top1") is not None for item in evaluable) /
+                                  len(evaluable) if evaluable else 0.0),
+        "q_cov_valid_fraction": (sum(item.get("q_cov") is not None for item in evaluable) /
+                                len(evaluable) if evaluable else 0.0),
+        "left_image": left_stats,
+        "right_image": right_stats,
+        "stereo_sample_count_difference": abs(left_stats["samples"] - right_stats["samples"]),
     }
 
 
@@ -475,6 +615,8 @@ def run_one(node, mode, run, args, root):
     output_dir = root / mode / f"run_{run:02d}"
     output_dir.mkdir(parents=True, exist_ok=True)
     node.statuses.clear()
+    node.left_image_stamps.clear()
+    node.right_image_stamps.clear()
     node.expected_mode = mode
     node.direction = 1.0
     node.waypoint_plan = (WaypointPlan(load_waypoints(args.waypoint_route), args.speed)
@@ -502,7 +644,9 @@ def run_one(node, mode, run, args, root):
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
     initial_pose = node.waypoint_plan.waypoints[0] if node.waypoint_plan else None
     process, log_handle = start_vo(
-        mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose)
+        mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose,
+        args.scene_manifest, args.submap_truth, args.candidate_label,
+        args.calibration_model, args.map_database, args.map_database_mode)
     resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
     resource_monitor.start()
     bag_process = None
@@ -573,6 +717,8 @@ def run_one(node, mode, run, args, root):
             "scene_manifest": os.environ.get("EXPERIMENT_SCENE_MANIFEST"),
             "scene_map_version": os.environ.get("EXPERIMENT_SCENE_MAP_VERSION"),
             "waypoint_route": str(Path(args.waypoint_route).resolve()) if args.waypoint_route else None,
+            "map_database": str(Path(args.map_database).resolve()) if args.map_database else None,
+            "map_database_mode": args.map_database_mode,
             "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         (output_dir / "experiment_manifest.json").write_text(
@@ -598,6 +744,15 @@ def run_one(node, mode, run, args, root):
         if bag_log_handle is not None:
             bag_log_handle.close()
         finalize_rosbag(output_dir, bag_staging_root, bag_staging_dir)
+        if args.map_database and Path(args.map_database).exists():
+            database_manifest = {
+                "path": str(Path(args.map_database).resolve()),
+                "mode": args.map_database_mode,
+                "sha256": file_sha256(args.map_database),
+                "size": Path(args.map_database).stat().st_size,
+            }
+            (output_dir / "map_database_manifest.json").write_text(
+                json.dumps(database_manifest, indent=2), encoding="utf-8")
         if bag_forced:
             (output_dir / "rosbag_forced_termination.txt").write_text(
                 "rosbag did not finish flushing within 120 seconds and was forcefully terminated.\n",
@@ -605,6 +760,24 @@ def run_one(node, mode, run, args, root):
             )
         node.write_diagnostics()
         node.close_files()
+        required = ["status.jsonl", "visual_odom.csv", "sim_odom.csv",
+                    "frame_diagnostics.csv", "candidate_labels.csv",
+                    "geometry_verification.csv", "reject_reasons.csv",
+                    "resource_usage.csv", "summary.json", "experiment_manifest.json"]
+        missing = [name for name in required
+                   if not (output_dir / name).exists() or (output_dir / name).stat().st_size == 0]
+        if args.record_bag and not (output_dir / "rosbag" / "metadata.yaml").exists():
+            missing.append("rosbag/metadata.yaml")
+        quality = {
+            "run_state": "complete" if not missing else "incomplete",
+            "missing_or_empty": missing,
+            "status_messages": len(node.statuses),
+            "left_image_samples": len(node.left_image_stamps),
+            "right_image_samples": len(node.right_image_stamps),
+            "single_gazebo_instance_checked_by_manager": True,
+        }
+        (output_dir / "data_quality_run.json").write_text(
+            json.dumps(quality, indent=2), encoding="utf-8")
         node.expected_mode = None
         truth_path = output_dir / "sim_odom.csv"
         if truth_path.exists():
@@ -630,6 +803,12 @@ def parse_args():
                         help="reverse the commanded route after this many seconds")
     parser.add_argument("--waypoint-route", default=None,
                         help="Generated route CSV; /sim/odom is used only by the motion controller")
+    parser.add_argument("--scene-manifest")
+    parser.add_argument("--submap-truth")
+    parser.add_argument("--candidate-label")
+    parser.add_argument("--calibration-model")
+    parser.add_argument("--map-database")
+    parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     return parser.parse_args()
 
 
@@ -640,7 +819,8 @@ def main():
     root = Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=True)
     rclpy.init()
-    node = ExperimentRecorder(root, args.speed, args.angular, args.waypoint_route)
+    node = ExperimentRecorder(root, args.speed, args.angular, args.waypoint_route,
+                              args.submap_truth)
     try:
         for mode in args.modes:
             for run in range(1, args.runs + 1):

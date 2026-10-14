@@ -43,7 +43,12 @@ def event(item):
         "candidate_ids": candidate_ids if isinstance(candidate_ids, list) else None,
         "candidate_sources": sources if isinstance(sources, dict) else {},
         "candidate_covered": item.get("candidate_covered") if label_available else None,
+        "top1_correct": item.get("top1_correct") if label_available else None,
+        "candidate_coverage_reason": item.get("candidate_coverage_reason", "label_unavailable"),
+        "legal_submaps": item.get("legal_submaps", []),
+        "none_of_the_above": item.get("none_of_the_above"),
         "coverage_label_available": label_available,
+        "evaluation_eligible": bool(item.get("evaluation_eligible", item.get("state") == "tracking")),
         "geometry_verified": item.get("geometry_verified"),
         "geometry_verification_available": "geometry_verified" in item,
         "reject_reason": item.get("reject_reason", "unavailable"),
@@ -52,6 +57,8 @@ def event(item):
         "topology_reliability": item.get("topology_reliability"),
         "q_cov": item.get("q_cov"),
         "q_top1": item.get("q_top1"),
+        "calibration_version": item.get("calibration_version", "unfitted-v0"),
+        "calibration_stage": item.get("calibration_stage", "unfitted"),
         "source_file": item["_source_file"],
     }
 
@@ -75,31 +82,42 @@ def main():
                 writer.writerow({key: json.dumps(value, ensure_ascii=True) if isinstance(value, (list, dict)) else value
                                  for key, value in item.items()})
 
-    labeled = [item for item in events if item["candidate_covered"] is not None and item.get("q_top1") is not None]
+    eligible = [item for item in events if item["evaluation_eligible"]]
+    calibrated = [item for item in eligible if item.get("calibration_stage") == "confidence"]
+    top1_labeled = [item for item in calibrated
+                    if item["top1_correct"] is not None and item.get("q_top1") is not None]
+    coverage_labeled = [item for item in calibrated
+                        if item["candidate_covered"] is not None and item.get("q_cov") is not None]
     metrics = {
-        "status": "available" if labeled else "unavailable",
-        "reason": "status logs have no independent legal-submap/query labels and calibrated q_top1" if not labeled else "",
-        "sample_count": len(labeled),
-        "ece": None,
-        "brier": None,
-        "nll": None,
-        "risk_coverage": None,
-        "coverage_label_available_fraction": (sum(item["coverage_label_available"] for item in events) / len(events)
-                                               if events else 0.0),
+        "status": "available" if top1_labeled and coverage_labeled else "unavailable",
+        "reason": ("requires independent top1/coverage labels and calibrated q_top1/q_cov"
+                   if not top1_labeled or not coverage_labeled else ""),
+        "top1": {"sample_count": len(top1_labeled), "ece": None, "brier": None,
+                 "nll": None, "risk_coverage": None},
+        "coverage": {"sample_count": len(coverage_labeled), "ece": None,
+                     "brier": None, "nll": None},
+        "coverage_label_available_fraction": (sum(item["coverage_label_available"] for item in eligible) / len(eligible)
+                                               if eligible else 0.0),
         "geometry_verification_available_fraction": (sum(item["geometry_verification_available"] for item in events) / len(events)
                                                      if events else 0.0),
+        "calibrated_event_fraction": len(calibrated) / len(events) if events else 0.0,
     }
-    if labeled:
-        labels = [item["candidate_covered"] for item in labeled]
-        confidences = [item["q_top1"] for item in labeled]
-        metrics.update(ece=ece(labels, confidences), brier=brier_score(labels, confidences),
-                       nll=nll(labels, confidences), risk_coverage=risk_coverage_curve(labels, confidences))
+    if top1_labeled:
+        labels = [item["top1_correct"] for item in top1_labeled]
+        confidences = [item["q_top1"] for item in top1_labeled]
+        metrics["top1"].update(ece=ece(labels, confidences), brier=brier_score(labels, confidences),
+                               nll=nll(labels, confidences), risk_coverage=risk_coverage_curve(labels, confidences))
         with (output / "risk_coverage.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=["coverage", "risk", "count"])
             writer.writeheader()
-            writer.writerows(metrics["risk_coverage"]["points"])
+            writer.writerows(metrics["top1"]["risk_coverage"]["points"])
     else:
         (output / "risk_coverage.csv").write_text("coverage,risk,count\n", encoding="utf-8")
+    if coverage_labeled:
+        labels = [item["candidate_covered"] for item in coverage_labeled]
+        confidences = [item["q_cov"] for item in coverage_labeled]
+        metrics["coverage"].update(ece=ece(labels, confidences), brier=brier_score(labels, confidences),
+                                   nll=nll(labels, confidences))
     (output / "calibration_metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=True), encoding="utf-8")
 
     summary = {

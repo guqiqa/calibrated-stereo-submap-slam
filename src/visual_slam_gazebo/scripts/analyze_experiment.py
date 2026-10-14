@@ -149,6 +149,15 @@ def run_quality(run_dir):
              for name in required}
     states = [row.get("state") for row in rows]
     rosbag = inspect_rosbag(run_dir)
+    left = summary.get("left_image", {})
+    right = summary.get("right_image", {})
+    sampled_images_continuous = (
+        left.get("samples", 0) > 0 and right.get("samples", 0) > 0 and
+        summary.get("stereo_sample_count_difference", 999) <= 2 and
+        (left.get("max_gap_s") or 999) <= 0.5 and (right.get("max_gap_s") or 999) <= 0.5)
+    continuity = rosbag["status"]
+    if continuity == "unavailable_no_rosbag":
+        continuity = "complete_sampled_topics" if sampled_images_continuous else "incomplete_sampled_topics"
     report = {
         "run": str(run_dir),
         "run_state": "complete",
@@ -159,7 +168,7 @@ def run_quality(run_dir):
         "retrieval_fields_available": all(any(key in row for row in rows) for key in
                                            ("retrieval_method", "geometry_verified", "reject_reason")),
         "coverage_labels_available": any(row.get("coverage_label_available") for row in rows),
-        "stereo_image_continuity": rosbag["status"],
+        "stereo_image_continuity": continuity,
         "rosbag": rosbag,
     }
     if not rows or invalid or any(not value["nonempty"] for value in files.values()):

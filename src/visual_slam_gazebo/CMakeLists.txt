@@ -27,6 +27,9 @@ install(
            scripts/generate_topology_scene.py scripts/topology_scene_generator.py
            scripts/waypoint_route_controller.py scripts/test_topology_scene_generator.py
            scripts/run_topology_dataset_campaign.py
+           scripts/fit_calibration_model.py scripts/preflight_experiment_check.py
+           scripts/freeze_formal_protocol.py
+           scripts/validate_mapping_query_separation.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

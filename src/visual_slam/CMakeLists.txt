@@ -14,6 +14,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 include(CTest)
 
 set(VISUAL_SLAM_OPENCV_ROOT "" CACHE PATH
@@ -70,7 +71,8 @@ target_link_libraries(stereo_vo_sim PRIVATE
   sensor_msgs::sensor_msgs__rosidl_typesupport_cpp
   nav_msgs::nav_msgs__rosidl_typesupport_cpp
   geometry_msgs::geometry_msgs__rosidl_typesupport_cpp
-  std_msgs::std_msgs__rosidl_typesupport_cpp)
+  std_msgs::std_msgs__rosidl_typesupport_cpp
+  yaml-cpp)
 if(VISUAL_SLAM_OPENCV_ROOT)
   set_target_properties(stereo_vo_sim PROPERTIES
     BUILD_RPATH "${VISUAL_SLAM_OPENCV_ROOT}/lib"

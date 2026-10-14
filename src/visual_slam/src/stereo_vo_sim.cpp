@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <map>
@@ -17,6 +18,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <yaml-cpp/yaml.h>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/core.hpp>
@@ -135,6 +137,10 @@ public:
     submap_length_m_ = declare_parameter<double>("submap_length_m", 5.0);
     submap_overlap_m_ = declare_parameter<double>("submap_overlap_m", 1.5);
     candidate_count_ = declare_parameter<int>("candidate_count", 3);
+    visual_candidate_count_ = declare_parameter<int>("visual_candidate_count", 4);
+    pose_candidate_count_ = declare_parameter<int>("pose_candidate_count", 3);
+    topology_candidate_count_ = declare_parameter<int>("topology_candidate_count", 2);
+    total_candidate_count_ = declare_parameter<int>("total_candidate_count", 10);
     representative_keyframes_ = declare_parameter<int>("representative_keyframes", 3);
     local_window_keyframes_ = declare_parameter<int>("local_window_keyframes", 15);
     keyframe_distance_m_ = declare_parameter<double>("keyframe_distance_m", 0.3);
@@ -150,8 +156,30 @@ public:
       "submap_apply_pose_correction", false);
     map_fusion_radius_m_ = declare_parameter<double>("map_fusion_radius_m", 0.10);
     map_export_path_ = declare_parameter<std::string>("map_export_path", "");
+    scene_manifest_path_ = declare_parameter<std::string>("scene_manifest_path", "");
+    submap_truth_path_ = declare_parameter<std::string>("submap_truth_path", "");
+    candidate_label_path_ = declare_parameter<std::string>("candidate_label_path", "");
+    online_submap_id_mode_ = declare_parameter<std::string>("online_submap_id_mode", "distance");
+    calibration_model_path_ = declare_parameter<std::string>("calibration_model_path", "");
+    map_database_path_ = declare_parameter<std::string>("map_database_path", "");
+    map_database_mode_ = declare_parameter<std::string>("map_database_mode", "online");
     gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
       initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_, initial_gazebo_yaw_);
+    if (online_submap_id_mode_ != "distance" && online_submap_id_mode_ != "scene") {
+      throw std::runtime_error("online_submap_id_mode must be distance or scene");
+    }
+    if (online_submap_id_mode_ == "scene") {
+      load_scene_submaps();
+    }
+    load_calibration_model();
+    if (map_database_mode_ != "online" && map_database_mode_ != "build" &&
+      map_database_mode_ != "load")
+    {
+      throw std::runtime_error("map_database_mode must be online, build or load");
+    }
+    if (map_database_mode_ == "load") {
+      load_map_database();
+    }
 
     if (processing_scale_ < 0.25 || processing_scale_ > 1.0) {
       throw std::runtime_error("processing_scale must be within [0.25, 1.0]");
@@ -163,7 +191,9 @@ public:
     if (submap_length_m_ <= 0.0 || submap_overlap_m_ < 0.0 || submap_overlap_m_ >= submap_length_m_) {
       throw std::runtime_error("submap_length_m and submap_overlap_m are invalid");
     }
-    if (candidate_count_ < 1 || representative_keyframes_ < 1 || local_window_keyframes_ < 1 ||
+    if (candidate_count_ < 1 || visual_candidate_count_ < 1 || pose_candidate_count_ < 1 ||
+      topology_candidate_count_ < 1 || total_candidate_count_ < 1 ||
+      representative_keyframes_ < 1 || local_window_keyframes_ < 1 ||
       switch_confirm_frames_ < 1 || switch_min_matches_ < 6 || switch_min_inliers_ < 6 ||
       smooth_transition_frames_ < 1)
     {
@@ -222,6 +252,13 @@ public:
   ~StereoVoSim() override
   {
     export_map();
+    if (map_database_mode_ == "build" && !map_database_path_.empty()) {
+      try {
+        save_map_database();
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR(get_logger(), "failed to save submap database: %s", error.what());
+      }
+    }
   }
 
 private:
@@ -264,6 +301,9 @@ private:
   struct Submap
   {
     int id{};
+    std::string scene_id;
+    std::vector<cv::Point2d> polygon;
+    std::vector<std::string> scene_neighbors;
     double start_distance{};
     double end_distance{};
     cv::Mat center_pose;
@@ -277,6 +317,233 @@ private:
     std::map<std::array<int, 3>, int> fused_voxel_indices;
     bool loaded{true};
   };
+
+  struct LogisticModel
+  {
+    std::vector<double> weights;
+    std::vector<double> mean;
+    std::vector<double> scale;
+    double intercept{};
+    bool available{false};
+  };
+
+  static bool point_in_polygon(const std::vector<cv::Point2d> & polygon, double x, double y)
+  {
+    if (polygon.size() < 3U) {
+      return false;
+    }
+    bool inside = false;
+    for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+      const auto & a = polygon[i];
+      const auto & b = polygon[j];
+      const bool crosses = ((a.y > y) != (b.y > y)) &&
+        (x < (b.x - a.x) * (y - a.y) / ((b.y - a.y) + 1e-12) + a.x);
+      if (crosses) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  void load_scene_submaps()
+  {
+    if (submap_truth_path_.empty()) {
+      throw std::runtime_error("scene submap mode requires submap_truth_path");
+    }
+    const YAML::Node root = YAML::LoadFile(submap_truth_path_);
+    const YAML::Node records = root["submaps"];
+    if (!records || !records.IsSequence() || records.size() == 0U) {
+      throw std::runtime_error("submap_truth_path has no submaps");
+    }
+    submaps_.clear();
+    for (const auto & record : records) {
+      Submap submap;
+      submap.id = static_cast<int>(submaps_.size());
+      submap.loaded = false;
+      submap.scene_id = record["id"].as<std::string>();
+      if (record["neighbors"]) {
+        for (const auto & neighbor : record["neighbors"]) {
+          submap.scene_neighbors.push_back(neighbor.as<std::string>());
+        }
+      }
+      const YAML::Node geometry = record["geometry"];
+      if (!geometry || geometry["type"].as<std::string>() != "Polygon") {
+        throw std::runtime_error("only Polygon submap geometry is supported");
+      }
+      const YAML::Node ring = geometry["coordinates"][0];
+      for (const auto & coordinate : ring) {
+        submap.polygon.emplace_back(coordinate[0].as<double>(), coordinate[1].as<double>());
+      }
+      if (record["center"] && record["center"].size() >= 2U) {
+        submap.center_pose = cv::Mat::eye(4, 4, CV_64F);
+        const cv::Point3f gazebo(
+          static_cast<float>(record["center"][0].as<double>()),
+          static_cast<float>(record["center"][1].as<double>()), 0.32F);
+        const cv::Mat map_T_gazebo = gazebo_T_map_.inv();
+        const cv::Point3f optical = visual_slam::transform_point(map_T_gazebo, gazebo);
+        submap.center_pose.at<double>(0, 3) = optical.x;
+        submap.center_pose.at<double>(1, 3) = optical.y;
+        submap.center_pose.at<double>(2, 3) = optical.z;
+      }
+      submaps_.push_back(std::move(submap));
+    }
+    submaps_.front().loaded = true;
+    scene_id_ = std::filesystem::path(submap_truth_path_).parent_path().filename().string();
+    if (!scene_manifest_path_.empty()) {
+      const YAML::Node manifest = YAML::LoadFile(scene_manifest_path_);
+      if (manifest["scene_id"]) scene_id_ = manifest["scene_id"].as<std::string>();
+      if (manifest["map_version"]) map_version_ = manifest["map_version"].as<std::string>();
+    }
+    if (map_version_.empty()) map_version_ = scene_id_;
+  }
+
+  void load_calibration_model()
+  {
+    if (calibration_model_path_.empty()) {
+      return;
+    }
+    const YAML::Node model = YAML::LoadFile(calibration_model_path_);
+    calibration_version_ = model["version"] ? model["version"].as<std::string>() : "unknown";
+    calibration_stage_ = model["stage"] ? model["stage"].as<std::string>() : "unknown";
+    if (model["temperature"]) calibration_temperature_ = model["temperature"].as<double>();
+    if (model["coverage_logistic"] && model["coverage_logistic"].IsSequence() &&
+      model["coverage_logistic"].size() == 2U)
+    {
+      coverage_slope_ = model["coverage_logistic"][0].as<double>();
+      coverage_intercept_ = model["coverage_logistic"][1].as<double>();
+    }
+    const auto load_logistic = [&model](const std::string & name, LogisticModel & target) {
+        const YAML::Node node = model["reliability_models"][name];
+        if (!node || !node["weights"]) return;
+        for (const auto & value : node["weights"]) target.weights.push_back(value.as<double>());
+        if (node["mean"]) for (const auto & value : node["mean"]) target.mean.push_back(value.as<double>());
+        if (node["scale"]) for (const auto & value : node["scale"]) target.scale.push_back(value.as<double>());
+        target.intercept = node["intercept"] ? node["intercept"].as<double>() : 0.0;
+        target.available = !target.weights.empty();
+      };
+    load_logistic("visual", visual_model_);
+    load_logistic("pose", pose_model_);
+    load_logistic("topology", topology_model_);
+    if (!visual_model_.available || !pose_model_.available || !topology_model_.available ||
+      calibration_temperature_ <= 0.0)
+    {
+      throw std::runtime_error("calibration model is incomplete or has invalid temperature");
+    }
+    calibrated_reliability_ = true;
+  }
+
+  static double logistic_predict(const LogisticModel & model, const std::vector<double> & features)
+  {
+    if (!model.available || model.weights.size() != features.size()) return 0.0;
+    double value = model.intercept;
+    for (std::size_t i = 0; i < features.size(); ++i) {
+      const double mean = i < model.mean.size() ? model.mean[i] : 0.0;
+      const double scale = i < model.scale.size() && std::abs(model.scale[i]) > 1e-9 ? model.scale[i] : 1.0;
+      value += model.weights[i] * (features[i] - mean) / scale;
+    }
+    value = std::max(-40.0, std::min(40.0, value));
+    return 1.0 / (1.0 + std::exp(-value));
+  }
+
+  static double score_margin(const std::vector<double> & scores)
+  {
+    if (scores.empty()) return 0.0;
+    std::vector<double> ordered = scores;
+    std::sort(ordered.begin(), ordered.end(), std::greater<double>());
+    return ordered.size() == 1U ? ordered.front() : ordered[0] - ordered[1];
+  }
+
+  static cv::Mat points_matrix(const std::vector<cv::Point3f> & points)
+  {
+    cv::Mat matrix(static_cast<int>(points.size()), 3, CV_32F);
+    for (int row = 0; row < matrix.rows; ++row) {
+      matrix.at<float>(row, 0) = points[row].x;
+      matrix.at<float>(row, 1) = points[row].y;
+      matrix.at<float>(row, 2) = points[row].z;
+    }
+    return matrix;
+  }
+
+  static std::vector<cv::Point3f> matrix_points(const cv::Mat & matrix)
+  {
+    std::vector<cv::Point3f> points;
+    if (matrix.empty() || matrix.cols != 3) return points;
+    cv::Mat values;
+    matrix.convertTo(values, CV_32F);
+    points.reserve(values.rows);
+    for (int row = 0; row < values.rows; ++row) {
+      points.emplace_back(values.at<float>(row, 0), values.at<float>(row, 1), values.at<float>(row, 2));
+    }
+    return points;
+  }
+
+  static void write_database_submap(cv::FileStorage & storage, const Submap & submap)
+  {
+    storage << "{" << "scene_id" << submap.scene_id
+            << "map_points" << points_matrix(submap.map_points)
+            << "map_descriptors" << submap.map_descriptors
+            << "representative_descriptors" << submap.representative_descriptors
+            << "center_pose" << submap.center_pose << "}";
+  }
+
+  void save_map_database() const
+  {
+    const std::filesystem::path path(map_database_path_);
+    if (path.has_parent_path()) std::filesystem::create_directories(path.parent_path());
+    cv::FileStorage storage(map_database_path_, cv::FileStorage::WRITE);
+    if (!storage.isOpened()) throw std::runtime_error("cannot open map database for writing");
+    storage << "schema_version" << 1 << "scene_id" << scene_id_ << "map_version" << map_version_;
+    storage << "submaps" << "[";
+    Submap global = global_map_;
+    global.scene_id = "__global__";
+    write_database_submap(storage, global);
+    for (const auto & submap : submaps_) write_database_submap(storage, submap);
+    storage << "]";
+    storage.release();
+  }
+
+  void load_map_database()
+  {
+    if (map_database_path_.empty()) throw std::runtime_error("load mode requires map_database_path");
+    cv::FileStorage storage(map_database_path_, cv::FileStorage::READ);
+    if (!storage.isOpened()) throw std::runtime_error("cannot open map database for reading");
+    std::string database_scene;
+    std::string database_version;
+    storage["scene_id"] >> database_scene;
+    storage["map_version"] >> database_version;
+    if ((!scene_id_.empty() && database_scene != scene_id_) ||
+      (!map_version_.empty() && database_version != map_version_))
+    {
+      throw std::runtime_error("map database scene or version does not match scene manifest");
+    }
+    std::map<std::string, Submap *> targets;
+    targets["__global__"] = &global_map_;
+    for (auto & submap : submaps_) targets[submap.scene_id] = &submap;
+    for (const auto & node : storage["submaps"]) {
+      std::string scene_id;
+      node["scene_id"] >> scene_id;
+      const auto found = targets.find(scene_id);
+      if (found == targets.end()) continue;
+      cv::Mat points;
+      node["map_points"] >> points;
+      node["map_descriptors"] >> found->second->map_descriptors;
+      node["representative_descriptors"] >> found->second->representative_descriptors;
+      node["center_pose"] >> found->second->center_pose;
+      found->second->map_points = matrix_points(points);
+      if (found->second->map_descriptors.rows != static_cast<int>(found->second->map_points.size())) {
+        throw std::runtime_error("map database point/descriptor count mismatch");
+      }
+    }
+    global_index_descriptors_.release();
+    global_index_submap_ids_.clear();
+    for (const auto & submap : submaps_) {
+      if (submap.representative_descriptors.empty()) continue;
+      global_index_descriptors_.push_back(submap.representative_descriptors);
+      global_index_submap_ids_.insert(global_index_submap_ids_.end(),
+        submap.representative_descriptors.rows, submap.id);
+    }
+    map_database_loaded_ = true;
+  }
 
   struct MapMatch
   {
@@ -596,11 +863,17 @@ private:
 
   void ensure_submaps_for_distance(double distance)
   {
+    if (online_submap_id_mode_ == "scene") {
+      return;
+    }
     const double stride = submap_length_m_ - submap_overlap_m_;
     const int last_id = std::max(0, static_cast<int>(std::floor(distance / stride)));
     for (int id = static_cast<int>(submaps_.size()); id <= last_id; ++id) {
       Submap submap;
       submap.id = id;
+      std::ostringstream scene_id;
+      scene_id << "runtime_" << std::setfill('0') << std::setw(4) << id;
+      submap.scene_id = scene_id.str();
       submap.start_distance = id * stride;
       submap.end_distance = submap.start_distance + submap_length_m_;
       submaps_.push_back(std::move(submap));
@@ -683,9 +956,15 @@ private:
     keyframe.frame = frame;
     keyframe.frame.left_image.release();
     keyframes_[keyframe.id] = keyframe;
-    append_frame_to_map(global_map_, keyframe);
+    if (map_database_mode_ != "load") {
+      append_frame_to_map(global_map_, keyframe);
+    }
+    const auto scene_memberships = scene_submaps_for_pose(world_pose);
     for (auto & submap : submaps_) {
-      if (distance + 1e-6 >= submap.start_distance && distance <= submap.end_distance + 1e-6) {
+      const bool belongs = online_submap_id_mode_ == "scene" ?
+        std::find(scene_memberships.begin(), scene_memberships.end(), submap.id) != scene_memberships.end() :
+        (distance + 1e-6 >= submap.start_distance && distance <= submap.end_distance + 1e-6);
+      if (belongs && map_database_mode_ != "load") {
         append_frame_to_map(submap, keyframe);
       }
     }
@@ -713,18 +992,52 @@ private:
     return std::max(0, static_cast<int>(std::floor(distance / stride)));
   }
 
+  std::vector<int> scene_submaps_for_pose(const cv::Mat & pose) const
+  {
+    std::vector<int> ids;
+    if (online_submap_id_mode_ != "scene" || pose.empty()) {
+      return ids;
+    }
+    const cv::Point3f optical(
+      static_cast<float>(pose.at<double>(0, 3)),
+      static_cast<float>(pose.at<double>(1, 3)),
+      static_cast<float>(pose.at<double>(2, 3)));
+    const cv::Point3f gazebo = visual_slam::transform_point(gazebo_T_map_, optical);
+    for (const auto & submap : submaps_) {
+      if (point_in_polygon(submap.polygon, gazebo.x, gazebo.y)) {
+        ids.push_back(submap.id);
+      }
+    }
+    return ids;
+  }
+
   void update_loaded_submaps()
   {
     if (submaps_.empty()) {
       return;
     }
     ensure_submaps_for_distance(trajectory_distance_);
-    const int expected = distance_submap_id(trajectory_distance_);
-    const int anchor = std::max(active_submap_id_, expected);
-    for (auto & submap : submaps_) {
-      submap.loaded = std::abs(submap.id - anchor) <= 1;
+    int expected = distance_submap_id(trajectory_distance_);
+    if (online_submap_id_mode_ == "scene") {
+      const auto memberships = scene_submaps_for_pose(world_T_current_);
+      expected = memberships.empty() ? active_submap_id_ : memberships.front();
+      if (keyframe_count_ == 0 && !memberships.empty()) {
+        active_submap_id_ = expected;
+        pending_submap_id_ = expected;
+      }
     }
-    if (trajectory_distance_ >= submaps_[anchor].end_distance - 1.0) {
+    const int anchor = online_submap_id_mode_ == "scene" ? expected : std::max(active_submap_id_, expected);
+    for (auto & submap : submaps_) {
+      if (online_submap_id_mode_ == "scene") {
+        const std::string & anchor_scene = submaps_[anchor].scene_id;
+        submap.loaded = submap.id == anchor ||
+          std::find(submap.scene_neighbors.begin(), submap.scene_neighbors.end(), anchor_scene) !=
+          submap.scene_neighbors.end();
+      } else {
+        submap.loaded = std::abs(submap.id - anchor) <= 1;
+      }
+    }
+    if (online_submap_id_mode_ != "scene" && trajectory_distance_ >= submaps_[anchor].end_distance - 1.0) {
       const int next = anchor + 1;
       if (next < static_cast<int>(submaps_.size())) {
         submaps_[next].loaded = true;
@@ -880,7 +1193,15 @@ private:
     if (submap_id == active_submap_id_) {
       return 1.0;
     }
-    if (std::abs(submap_id - active_submap_id_) == 1) {
+    if (online_submap_id_mode_ == "scene" && active_submap_id_ >= 0 &&
+      active_submap_id_ < static_cast<int>(submaps_.size()) &&
+      std::find(submaps_[active_submap_id_].scene_neighbors.begin(),
+        submaps_[active_submap_id_].scene_neighbors.end(), submaps_[submap_id].scene_id) !=
+      submaps_[active_submap_id_].scene_neighbors.end())
+    {
+      return 0.8;
+    }
+    if (online_submap_id_mode_ != "scene" && std::abs(submap_id - active_submap_id_) == 1) {
       return 0.8;
     }
     return 0.2;
@@ -928,6 +1249,22 @@ private:
     }
   }
 
+  std::vector<int> merged_candidate_ids() const
+  {
+    std::vector<int> result;
+    const std::array<const std::vector<int> *, 3> sources{
+      &last_visual_source_ids_, &last_pose_source_ids_, &last_topology_source_ids_};
+    const std::size_t max_size = std::max({sources[0]->size(), sources[1]->size(), sources[2]->size()});
+    for (std::size_t rank = 0; rank < max_size &&
+      static_cast<int>(result.size()) < total_candidate_count_; ++rank) {
+      for (const auto * source : sources) {
+        if (rank < source->size()) append_unique(result, {(*source)[rank]}, total_candidate_count_);
+      }
+    }
+    if (active_submap_id_ >= 0) append_unique(result, {active_submap_id_}, total_candidate_count_);
+    return result;
+  }
+
   std::string retrieval_method() const
   {
     if (submap_mode_ == "global" || submap_mode_ == "c0") {
@@ -951,11 +1288,16 @@ private:
       const double visual = std::max(1e-6, std::min(1.0 - 1e-6, match.visual_score));
       const double pose = std::max(1e-6, std::min(1.0 - 1e-6, match.pose_score));
       const double topology = std::max(1e-6, std::min(1.0 - 1e-6, match.topology_score));
-      return last_visual_reliability_ * std::log(visual) +
-             last_pose_reliability_ * std::log(pose) +
-             last_topology_reliability_ * std::log(topology);
+      return (last_visual_available_ ? last_visual_reliability_ * std::log(visual) : 0.0) +
+             (last_pose_available_ ? last_pose_reliability_ * std::log(pose) : 0.0) +
+             (last_topology_available_ ? last_topology_reliability_ * std::log(topology) : 0.0);
     }
-    return 0.50 * match.visual_score + 0.30 * match.pose_score + 0.20 * match.topology_score;
+    const double weight = (last_visual_available_ ? 0.50 : 0.0) +
+      (last_pose_available_ ? 0.30 : 0.0) + (last_topology_available_ ? 0.20 : 0.0);
+    if (weight <= 0.0) return 0.0;
+    return ((last_visual_available_ ? 0.50 * match.visual_score : 0.0) +
+      (last_pose_available_ ? 0.30 * match.pose_score : 0.0) +
+      (last_topology_available_ ? 0.20 * match.topology_score : 0.0)) / weight;
   }
 
   void update_retrieval_probability()
@@ -967,9 +1309,15 @@ private:
     const double peak = candidate_fusion_score(last_candidates_.front());
     double total = 0.0;
     for (const auto & candidate : last_candidates_) {
-      total += std::exp(8.0 * (candidate_fusion_score(candidate) - peak));
+      total += std::exp((8.0 / std::max(1e-6, calibration_temperature_)) *
+        (candidate_fusion_score(candidate) - peak));
     }
     last_q_top1_ = total > 0.0 ? 1.0 / total : 0.0;
+    const double logit = std::log(std::max(1e-6, last_q_top1_) /
+      std::max(1e-6, 1.0 - last_q_top1_));
+    double coverage_logit = coverage_slope_ * logit + coverage_intercept_;
+    coverage_logit = std::max(-40.0, std::min(40.0, coverage_logit));
+    last_q_cov_ = 1.0 / (1.0 + std::exp(-coverage_logit));
   }
 
   void evaluate_submaps(const Frame & frame)
@@ -978,12 +1326,20 @@ private:
     last_visual_source_ids_.clear();
     last_pose_source_ids_.clear();
     last_topology_source_ids_.clear();
+    last_visual_features_.clear();
+    last_pose_features_.clear();
+    last_topology_features_.clear();
     last_matching_ms_ = 0.0;
     last_retrieval_decision_ = "hold";
     last_reject_reason_.clear();
     last_geometry_verified_ = false;
     last_selected_submap_ = -1;
     last_q_top1_ = 0.0;
+    last_q_cov_ = 0.0;
+    last_visual_available_ = !frame.descriptors.empty();
+    last_pose_available_ = last_rigid_inliers_ >= min_3d3d_inliers_ && last_motion_consistency_ > 0.0;
+    last_topology_available_ = active_submap_id_ >= 0 &&
+      active_submap_id_ < static_cast<int>(submaps_.size());
     last_visual_reliability_ = clamp01(static_cast<double>(frame.descriptors.rows) /
       static_cast<double>(std::max(1, max_features_)));
     last_pose_reliability_ = clamp01(last_motion_consistency_ *
@@ -1026,16 +1382,30 @@ private:
           pose_distance(submap.center_pose, world_T_current_) / 18.0);
         topology_scores[submap.id] = topology_score(submap.id);
       }
-      last_visual_source_ids_ = top_ids(visual_scores, 4);
-      if (submap_mode_ == "c1") {
-        ids = last_visual_source_ids_;
-      } else {
-        last_pose_source_ids_ = top_ids(pose_scores, 3);
-        last_topology_source_ids_ = top_ids(topology_scores, 2);
-        append_unique(ids, last_visual_source_ids_, 10);
-        append_unique(ids, last_pose_source_ids_, 10);
-        append_unique(ids, last_topology_source_ids_, 10);
+      last_visual_source_ids_ = top_ids(visual_scores, visual_candidate_count_);
+      if (last_pose_available_) {
+        last_pose_source_ids_ = top_ids(pose_scores, pose_candidate_count_);
       }
+      if (last_topology_available_) {
+        last_topology_source_ids_ = top_ids(topology_scores, topology_candidate_count_);
+      }
+      last_visual_features_ = {
+        last_visual_source_ids_.empty() ? 0.0 : visual_scores[last_visual_source_ids_[0]],
+        score_margin(visual_scores),
+        static_cast<double>(frame.descriptors.rows) / std::max(1, max_features_)};
+      last_pose_features_ = {
+        last_pose_source_ids_.empty() ? 0.0 : pose_scores[last_pose_source_ids_[0]],
+        score_margin(pose_scores), last_motion_consistency_,
+        static_cast<double>(last_rigid_inliers_) / std::max(1, min_3d3d_inliers_ * 2)};
+      last_topology_features_ = {
+        last_topology_source_ids_.empty() ? 0.0 : topology_scores[last_topology_source_ids_[0]],
+        score_margin(topology_scores), active_submap_id_ >= 0 ? 1.0 : 0.0};
+      if (retrieval_method() == "p" && calibrated_reliability_) {
+        last_visual_reliability_ = logistic_predict(visual_model_, last_visual_features_);
+        last_pose_reliability_ = logistic_predict(pose_model_, last_pose_features_);
+        last_topology_reliability_ = logistic_predict(topology_model_, last_topology_features_);
+      }
+      ids = merged_candidate_ids();
       for (const int id : ids) {
         auto & submap = submaps_[id];
         MapMatch match = validate_map(frame, submap, visual_scores[id], topology_score(id));
@@ -1064,9 +1434,10 @@ private:
       return;
     }
     update_retrieval_probability();
-    if (retrieval_method() == "p" && last_visual_reliability_ < retrieval_low_reliability_ &&
-      last_pose_reliability_ < retrieval_low_reliability_ &&
-      last_topology_reliability_ < retrieval_low_reliability_)
+    if (retrieval_method() == "p" &&
+      ((!last_visual_available_ || last_visual_reliability_ < retrieval_low_reliability_) &&
+      (!last_pose_available_ || last_pose_reliability_ < retrieval_low_reliability_) &&
+      (!last_topology_available_ || last_topology_reliability_ < retrieval_low_reliability_)))
     {
       last_retrieval_decision_ = "relocalize";
       last_reject_reason_ = "all_evidence_low_reliability";
@@ -1086,7 +1457,8 @@ private:
     last_selected_submap_ = best->submap_id;
     if (last_q_top1_ < retrieval_min_probability_) {
       last_retrieval_decision_ = "reject";
-      last_reject_reason_ = "low_calibrated_confidence";
+      last_reject_reason_ = calibration_stage_ == "confidence" ?
+        "low_calibrated_confidence" : "low_retrieval_confidence";
       pending_submap_id_ = active_submap_id_;
       pending_switch_frames_ = 0;
       return;
@@ -1123,10 +1495,63 @@ private:
       if (i > 0) {
         data << ',';
       }
-      data << last_candidates_[i].submap_id;
+      data << scene_id_json(last_candidates_[i].submap_id);
     }
     data << ']';
     return data.str();
+  }
+
+  std::string candidate_fusion_scores_json() const
+  {
+    std::vector<double> scores;
+    scores.reserve(last_candidates_.size());
+    for (const auto & candidate : last_candidates_) scores.push_back(candidate_fusion_score(candidate));
+    return doubles_json(scores);
+  }
+
+  std::string scene_id_json(int runtime_id) const
+  {
+    if (runtime_id < 0 || runtime_id >= static_cast<int>(submaps_.size())) {
+      return "null";
+    }
+    return "\"" + submaps_[runtime_id].scene_id + "\"";
+  }
+
+  std::string scene_ids_json(const std::vector<int> & ids) const
+  {
+    std::ostringstream data;
+    data << '[';
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+      if (i > 0) data << ',';
+      data << scene_id_json(ids[i]);
+    }
+    data << ']';
+    return data.str();
+  }
+
+  std::string runtime_scene_mapping_json() const
+  {
+    std::ostringstream data;
+    data << '[';
+    bool first = true;
+    for (std::size_t i = 0; i < submaps_.size(); ++i) {
+      if (!submaps_[i].loaded) continue;
+      if (!first) data << ',';
+      first = false;
+      data << "{\"runtime_id\":" << submaps_[i].id << ",\"scene_id\":\""
+           << submaps_[i].scene_id << "\",\"map_version\":\"" << map_version_ << "\"}";
+    }
+    data << ']';
+    return data.str();
+  }
+
+  std::vector<int> loaded_submap_ids() const
+  {
+    std::vector<int> ids;
+    for (const auto & submap : submaps_) {
+      if (submap.loaded) ids.push_back(submap.id);
+    }
+    return ids;
   }
 
   static std::string ids_json(const std::vector<int> & ids)
@@ -1138,6 +1563,18 @@ private:
         data << ',';
       }
       data << ids[i];
+    }
+    data << ']';
+    return data.str();
+  }
+
+  static std::string doubles_json(const std::vector<double> & values)
+  {
+    std::ostringstream data;
+    data << '[';
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      if (i > 0) data << ',';
+      data << json_number(values[i]);
     }
     data << ']';
     return data.str();
@@ -1587,16 +2024,30 @@ private:
          << ",\"tracking_failures\":" << tracking_failures_
          << ",\"submap_mode\":\"" << submap_mode_ << "\""
          << ",\"active_submap\":" << active_submap_id_
+         << ",\"scene_id\":\"" << scene_id_ << "\""
+         << ",\"map_version\":\"" << map_version_ << "\""
+         << ",\"online_submap_id_mode\":\"" << online_submap_id_mode_ << "\""
+         << ",\"map_database_mode\":\"" << map_database_mode_ << "\""
+         << ",\"map_database_loaded\":" << (map_database_loaded_ ? "true" : "false")
+         << ",\"runtime_submap_ids\":" << ids_json(loaded_submap_ids())
+         << ",\"scene_submap_ids\":" << scene_ids_json(loaded_submap_ids())
+         << ",\"runtime_scene_mapping\":" << runtime_scene_mapping_json()
          << ",\"candidate_submaps\":" << candidate_ids_json()
          << ",\"retrieval_method\":\"" << retrieval_method() << "\""
          << ",\"retrieval_decision\":\"" << last_retrieval_decision_ << "\""
          << ",\"selected_submap\":" << last_selected_submap_
+         << ",\"selected_scene_submap\":" << scene_id_json(last_selected_submap_)
          << ",\"candidate_ids\":" << candidate_ids_json()
-         << ",\"candidate_sources\":{\"visual\":" << ids_json(last_visual_source_ids_)
-         << ",\"pose\":" << ids_json(last_pose_source_ids_)
-         << ",\"topology\":" << ids_json(last_topology_source_ids_) << "}"
+         << ",\"candidate_fusion_scores\":" << candidate_fusion_scores_json()
+         << ",\"candidate_runtime_ids\":" << ids_json([&]() { std::vector<int> value; for (const auto & item : last_candidates_) value.push_back(item.submap_id); return value; }())
+         << ",\"candidate_sources\":{\"visual\":" << scene_ids_json(last_visual_source_ids_)
+         << ",\"pose\":" << scene_ids_json(last_pose_source_ids_)
+         << ",\"topology\":" << scene_ids_json(last_topology_source_ids_) << "}"
          << ",\"candidate_covered\":null"
          << ",\"coverage_label_available\":false"
+         << ",\"candidate_coverage_reason\":\"label_unavailable_online\""
+         << ",\"legal_submaps\":[]"
+         << ",\"none_of_the_above\":false"
          << ",\"geometry_verified\":" << (last_geometry_verified_ ? "true" : "false")
          << ",\"geometry_verification_available\":true"
          << ",\"reprojection_error_px\":" <<
@@ -1606,14 +2057,23 @@ private:
          << ",\"pose_reliability\":" << last_pose_reliability_
          << ",\"topology_reliability\":" << last_topology_reliability_
          << ",\"evidence_available\":{\"visual\":" <<
-      (retrieval_method() == "c0" ? "false" : "true")
+      (last_visual_available_ ? "true" : "false")
          << ",\"pose\":" <<
-      ((retrieval_method() == "c4" || retrieval_method() == "p") ? "true" : "false")
+      ((retrieval_method() != "c1" && last_pose_available_) ? "true" : "false")
          << ",\"topology\":" <<
-      ((retrieval_method() == "c4" || retrieval_method() == "p") ? "true" : "false") << "}"
+      ((retrieval_method() != "c1" && last_topology_available_) ? "true" : "false") << "}"
+         << ",\"reliability_features\":{\"visual\":" << doubles_json(last_visual_features_)
+         << ",\"pose\":" << doubles_json(last_pose_features_)
+         << ",\"topology\":" << doubles_json(last_topology_features_) << "}"
          << ",\"q_top1\":" << last_q_top1_
-         << ",\"q_cov\":null"
-         << ",\"calibration_version\":\"unfitted-v0\""
+         << ",\"q_cov\":";
+    if (calibrated_reliability_) {
+      data << json_number(last_q_cov_);
+    } else {
+      data << "null";
+    }
+    data << ",\"calibration_version\":\"" << calibration_version_ << "\""
+         << ",\"calibration_stage\":\"" << calibration_stage_ << "\""
          << ",\"switch_state\":\"" << switch_state << "\""
          << ",\"visual_score\":" << (last_candidates_.empty() ? 0.0 : last_candidates_.front().visual_score)
          << ",\"pose_score\":" << (last_candidates_.empty() ? 0.0 : last_candidates_.front().pose_score)
@@ -1792,6 +2252,10 @@ private:
   double submap_length_m_{};
   double submap_overlap_m_{};
   int candidate_count_{};
+  int visual_candidate_count_{4};
+  int pose_candidate_count_{3};
+  int topology_candidate_count_{2};
+  int total_candidate_count_{10};
   int representative_keyframes_{};
   int local_window_keyframes_{};
   double keyframe_distance_m_{};
@@ -1806,6 +2270,25 @@ private:
   bool submap_apply_pose_correction_{false};
   double map_fusion_radius_m_{};
   std::string map_export_path_;
+  std::string scene_manifest_path_;
+  std::string submap_truth_path_;
+  std::string candidate_label_path_;
+  std::string online_submap_id_mode_{"distance"};
+  std::string calibration_model_path_;
+  std::string map_database_path_;
+  std::string map_database_mode_{"online"};
+  bool map_database_loaded_{false};
+  std::string scene_id_{"legacy_distance_scene"};
+  std::string map_version_{"legacy-distance-v1"};
+  std::string calibration_version_{"unfitted-v0"};
+  std::string calibration_stage_{"unfitted"};
+  LogisticModel visual_model_;
+  LogisticModel pose_model_;
+  LogisticModel topology_model_;
+  bool calibrated_reliability_{false};
+  double calibration_temperature_{1.0};
+  double coverage_slope_{1.0};
+  double coverage_intercept_{0.0};
   bool baseline_parameter_declared_{false};
   bool calibration_ready_{false};
   int rejected_pairs_{0};
@@ -1850,7 +2333,11 @@ private:
   double last_pose_reliability_{0.0};
   double last_topology_reliability_{0.0};
   double last_q_top1_{0.0};
+  double last_q_cov_{0.0};
   bool last_geometry_verified_{false};
+  bool last_visual_available_{false};
+  bool last_pose_available_{false};
+  bool last_topology_available_{false};
   int last_selected_submap_{-1};
   std::string last_retrieval_decision_{"hold"};
   std::string last_reject_reason_;
@@ -1865,6 +2352,9 @@ private:
   std::vector<int> last_visual_source_ids_;
   std::vector<int> last_pose_source_ids_;
   std::vector<int> last_topology_source_ids_;
+  std::vector<double> last_visual_features_;
+  std::vector<double> last_pose_features_;
+  std::vector<double> last_topology_features_;
   std::vector<TrajectorySample> trajectory_samples_;
   LoopClosure last_loop_closure_;
   cv::Ptr<cv::ORB> orb_;

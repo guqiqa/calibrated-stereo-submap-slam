@@ -20,8 +20,8 @@ def ece(y_true, confidence, bins=10):
     result = 0.0
     for index in range(bins):
         lower, upper = index / bins, (index + 1) / bins
-        bucket = [(y, c) for y, c in pairs if lower <= c < upper or
-                  (index == bins - 1 and c <= upper)]
+        bucket = [(y, c) for y, c in pairs if (lower <= c < upper) or
+                  (index == bins - 1 and lower <= c <= upper)]
         if bucket:
             result += len(bucket) / total * abs(sum(y for y, _ in bucket) / len(bucket) -
                                                 sum(c for _, c in bucket) / len(bucket))
