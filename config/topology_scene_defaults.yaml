@@ -17,6 +17,13 @@ geometry:
 submaps:
   length_m: 5.0
   overlap_m: 1.5
+  hall_cell_size_m: 7.0
+  hall_overlap_m: 1.5
+  junction_radius_m: 3.0
+  corridor_junction_overlap_m: 1.5
+  minimum_neighbor_overlap_area_m2: 0.20
+  max_legal_submaps: 3
+  max_overflow_fraction: 0.05
   overlap_ratios: [0.2, 0.3, 0.4]
 visual:
   texture_repeat_ratio: 0.65

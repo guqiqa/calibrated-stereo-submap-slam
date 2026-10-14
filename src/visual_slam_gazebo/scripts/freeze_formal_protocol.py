@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 
-PROTOCOL_VERSION = "c1-c4-p-calibrated-v1"
+PROTOCOL_VERSION = "c1-c4-p-typed-query-v2"
 
 
 def sha256(path):
@@ -39,6 +39,12 @@ def main():
         raise SystemExit("formal dataset requires at least 10 independent layouts and a test split")
     if calibration.get("stage") != "confidence":
         raise SystemExit("only a stage=confidence calibration model can be frozen")
+    if calibration.get("protocol_version") != PROTOCOL_VERSION:
+        raise SystemExit("calibration model protocol does not match the formal protocol")
+    if (calibration.get("coverage_feature_schema") != "candidate-coverage-v1" or
+            not all(len(calibration.get("coverage_model", {}).get(name, [])) == 12
+                    for name in ("weights", "mean", "scale"))):
+        raise SystemExit("confidence calibration lacks the frozen 12-feature coverage model")
     payload = {
         "frozen": True,
         "protocol_version": PROTOCOL_VERSION,

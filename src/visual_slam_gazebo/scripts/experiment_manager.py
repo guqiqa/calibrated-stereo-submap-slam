@@ -208,6 +208,9 @@ def main():
         expected = scene_manifest.get("files", {}).get("scene.world", {}).get("sha256")
         if expected and sha256(scene_world) != expected:
             raise SystemExit("scene.world does not match scene_manifest.json SHA-256")
+        if (profile.get("scene") == "generated_topology_scene" and
+                scene_manifest.get("schema_version") != 2):
+            raise SystemExit("generated topology experiments require heterogeneous submap schema_version=2")
     elif profile.get("scene_manifest_required"):
         raise SystemExit(f"project {args.project} requires --scene-manifest")
     timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -225,7 +228,9 @@ def main():
         "map_database_mode": args.map_database_mode,
         "map_database_sha256": sha256(map_database) if map_database and map_database.exists() else None,
         "camera": {"width": 640, "height": 480, "rate_hz": 15, "baseline_m": 0.07},
-        "submap": {"length_m": 5.0, "overlap_m": 1.5, "visual_budget": 4,
+        "submap": {"corridor_length_m": 5.0, "corridor_overlap_m": 1.5,
+                   "hall_cell_size_m": 7.0, "hall_overlap_m": 1.5,
+                   "junction_radius_m": 3.0, "visual_budget": 4,
                    "pose_budget": 3, "topology_budget": 2, "total_budget": 10},
         "git_commit": git_value(root, "rev-parse", "HEAD"),
         "git_dirty": bool(git_value(root, "status", "--porcelain")),
@@ -235,6 +240,8 @@ def main():
         manifest["scene_manifest"] = str(scene_manifest_path)
         manifest["scene_id"] = scene_manifest.get("scene_id")
         manifest["scene_map_version"] = scene_manifest.get("map_version")
+        manifest["scene_schema_version"] = scene_manifest.get("schema_version")
+        manifest["scene_obstacle_mode"] = scene_manifest.get("obstacle_mode")
         manifest["scene_manifest_sha256"] = sha256(scene_manifest_path)
     write_json(output / "campaign_manifest.json", manifest)
     # JSON is valid YAML and preserves a dependency-free frozen configuration snapshot.
@@ -308,6 +315,8 @@ def main():
             update_state(state_path, "archiving", project=args.project)
             archive_path = archive_campaign(root, args.project, output)
         manifest["ended_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        manifest["map_database_sha256"] = (
+            sha256(map_database) if map_database and map_database.exists() else None)
         manifest["archive"] = str(archive_path) if archive_path else None
         write_json(output / "campaign_manifest.json", manifest)
         update_state(state_path, "complete", project=args.project, output=str(output), archive=manifest["archive"])

@@ -54,10 +54,33 @@ Calibration metrics are separated by meaning: `q_top1` is evaluated against
 `top1_correct`, while `q_cov` is evaluated against `candidate_covered`. Using the
 coverage label as the Top-1 label is prohibited.
 
+`q_cov` uses the frozen `candidate-coverage-v1` logistic model. Its 12 ordered
+inputs are candidate count; visual, pose, and topology source counts; maximum
+fusion score and Top-1/Top-2 fusion margin; maximum visual, pose, and topology
+scores; and three evidence-unavailable flags. A stage-1 reliability run records
+these features but publishes `q_cov: null`. Only a stage-2 `confidence` model
+with the exact feature names and width may publish a calibrated `q_cov`.
+
 Formal query runs must use `map_database_mode=load` with a database produced by
 an independent `mapping_route` run in `map_database_mode=build`. Query runs keep
 that database frozen; online keyframes may support VO but cannot mutate the loaded
 retrieval map.
+
+## Typed query protocol
+
+Mapping and query are separate captures at least 5 s apart, with no image,
+timestamp, feature-cache, or mutable-map reuse. The protocol does not impose a
+single spatial/viewpoint conjunction on every frame. `mapped_same_view` has no
+2 m or 30 degree gate; `mapped_reverse_view` requires at least 120 degrees only
+on preregistered retrieval-opportunity frames; `mapped_crossing` requires at
+least 30 degrees only on those opportunity frames. `cold_start` is evaluated on
+relocalization frames and `none_of_the_above` requires an empty legal-map set.
+All frames remain in trajectory evaluation and retain nearest-mapping distance
+and viewpoint diagnostics.
+
+Scene submaps are heterogeneous: 5 m corridor maps with 1.5 m overlap, 7 m hall
+grid maps with 1.5 m overlap, and 3 m-radius junction maps. Semantic scene IDs
+are mapped explicitly to runtime IDs; integer equality is never assumed.
 
 ## Rejection vocabulary
 

@@ -406,14 +406,7 @@ private:
     calibration_version_ = model["version"] ? model["version"].as<std::string>() : "unknown";
     calibration_stage_ = model["stage"] ? model["stage"].as<std::string>() : "unknown";
     if (model["temperature"]) calibration_temperature_ = model["temperature"].as<double>();
-    if (model["coverage_logistic"] && model["coverage_logistic"].IsSequence() &&
-      model["coverage_logistic"].size() == 2U)
-    {
-      coverage_slope_ = model["coverage_logistic"][0].as<double>();
-      coverage_intercept_ = model["coverage_logistic"][1].as<double>();
-    }
-    const auto load_logistic = [&model](const std::string & name, LogisticModel & target) {
-        const YAML::Node node = model["reliability_models"][name];
+    const auto load_logistic = [](const YAML::Node & node, LogisticModel & target) {
         if (!node || !node["weights"]) return;
         for (const auto & value : node["weights"]) target.weights.push_back(value.as<double>());
         if (node["mean"]) for (const auto & value : node["mean"]) target.mean.push_back(value.as<double>());
@@ -421,15 +414,39 @@ private:
         target.intercept = node["intercept"] ? node["intercept"].as<double>() : 0.0;
         target.available = !target.weights.empty();
       };
-    load_logistic("visual", visual_model_);
-    load_logistic("pose", pose_model_);
-    load_logistic("topology", topology_model_);
+    load_logistic(model["reliability_models"]["visual"], visual_model_);
+    load_logistic(model["reliability_models"]["pose"], pose_model_);
+    load_logistic(model["reliability_models"]["topology"], topology_model_);
     if (!visual_model_.available || !pose_model_.available || !topology_model_.available ||
       calibration_temperature_ <= 0.0)
     {
       throw std::runtime_error("calibration model is incomplete or has invalid temperature");
     }
     calibrated_reliability_ = true;
+    if (calibration_stage_ == "confidence") {
+      const std::vector<std::string> expected_names{
+        "candidate_count", "visual_source_count", "pose_source_count",
+        "topology_source_count", "max_fusion_score", "fusion_top1_top2_margin",
+        "max_visual_score", "max_pose_score", "max_topology_score",
+        "visual_unavailable", "pose_unavailable", "topology_unavailable"};
+      if (!model["coverage_feature_names"] ||
+        model["coverage_feature_schema"].as<std::string>("") != "candidate-coverage-v1")
+      {
+        throw std::runtime_error("confidence calibration lacks candidate-coverage-v1 metadata");
+      }
+      std::vector<std::string> actual_names;
+      for (const auto & value : model["coverage_feature_names"]) {
+        actual_names.push_back(value.as<std::string>());
+      }
+      load_logistic(model["coverage_model"], coverage_model_);
+      if (actual_names != expected_names || coverage_model_.weights.size() != expected_names.size() ||
+        coverage_model_.mean.size() != expected_names.size() ||
+        coverage_model_.scale.size() != expected_names.size())
+      {
+        throw std::runtime_error("confidence calibration coverage feature contract is invalid");
+      }
+      calibrated_coverage_ = true;
+    }
   }
 
   static double logistic_predict(const LogisticModel & model, const std::vector<double> & features)
@@ -1300,10 +1317,46 @@ private:
       (last_topology_available_ ? 0.20 * match.topology_score : 0.0)) / weight;
   }
 
+  std::vector<double> coverage_features() const
+  {
+    std::vector<double> fusion_scores;
+    fusion_scores.reserve(last_candidates_.size());
+    double max_visual = 0.0;
+    double max_pose = 0.0;
+    double max_topology = 0.0;
+    for (const auto & candidate : last_candidates_) {
+      fusion_scores.push_back(candidate_fusion_score(candidate));
+      max_visual = std::max(max_visual, candidate.visual_score);
+      max_pose = std::max(max_pose, candidate.pose_score);
+      max_topology = std::max(max_topology, candidate.topology_score);
+    }
+    const bool pose_available = retrieval_method() != "c1" && last_pose_available_;
+    const bool topology_available = retrieval_method() != "c1" && last_topology_available_;
+    const double max_fusion = fusion_scores.empty() ? 0.0 :
+      *std::max_element(fusion_scores.begin(), fusion_scores.end());
+    return {
+      static_cast<double>(last_candidates_.size()),
+      static_cast<double>(last_visual_source_ids_.size()),
+      static_cast<double>(last_pose_source_ids_.size()),
+      static_cast<double>(last_topology_source_ids_.size()),
+      max_fusion,
+      score_margin(fusion_scores),
+      max_visual,
+      max_pose,
+      max_topology,
+      last_visual_available_ ? 0.0 : 1.0,
+      pose_available ? 0.0 : 1.0,
+      topology_available ? 0.0 : 1.0};
+  }
+
   void update_retrieval_probability()
   {
     last_q_top1_ = 0.0;
+    last_coverage_features_ = coverage_features();
     if (last_candidates_.empty()) {
+      if (calibrated_coverage_) {
+        last_q_cov_ = logistic_predict(coverage_model_, last_coverage_features_);
+      }
       return;
     }
     const double peak = candidate_fusion_score(last_candidates_.front());
@@ -1313,11 +1366,9 @@ private:
         (candidate_fusion_score(candidate) - peak));
     }
     last_q_top1_ = total > 0.0 ? 1.0 / total : 0.0;
-    const double logit = std::log(std::max(1e-6, last_q_top1_) /
-      std::max(1e-6, 1.0 - last_q_top1_));
-    double coverage_logit = coverage_slope_ * logit + coverage_intercept_;
-    coverage_logit = std::max(-40.0, std::min(40.0, coverage_logit));
-    last_q_cov_ = 1.0 / (1.0 + std::exp(-coverage_logit));
+    if (calibrated_coverage_) {
+      last_q_cov_ = logistic_predict(coverage_model_, last_coverage_features_);
+    }
   }
 
   void evaluate_submaps(const Frame & frame)
@@ -1329,6 +1380,7 @@ private:
     last_visual_features_.clear();
     last_pose_features_.clear();
     last_topology_features_.clear();
+    last_coverage_features_.clear();
     last_matching_ms_ = 0.0;
     last_retrieval_decision_ = "hold";
     last_reject_reason_.clear();
@@ -1356,6 +1408,7 @@ private:
     if (submaps_.empty() || frame.descriptors.empty()) {
       last_retrieval_decision_ = "relocalize";
       last_reject_reason_ = frame.descriptors.empty() ? "visual_evidence_unavailable" : "candidate_set_empty";
+      update_retrieval_probability();
       return;
     }
     const auto started = std::chrono::steady_clock::now();
@@ -1428,12 +1481,12 @@ private:
       return candidate_fusion_score(lhs) > candidate_fusion_score(rhs);
     });
     last_matching_ms_ = elapsed_ms(started);
+    update_retrieval_probability();
     if (last_candidates_.empty()) {
       last_retrieval_decision_ = "relocalize";
       last_reject_reason_ = "candidate_set_empty";
       return;
     }
-    update_retrieval_probability();
     if (retrieval_method() == "p" &&
       ((!last_visual_available_ || last_visual_reliability_ < retrieval_low_reliability_) &&
       (!last_pose_available_ || last_pose_reliability_ < retrieval_low_reliability_) &&
@@ -2065,9 +2118,11 @@ private:
          << ",\"reliability_features\":{\"visual\":" << doubles_json(last_visual_features_)
          << ",\"pose\":" << doubles_json(last_pose_features_)
          << ",\"topology\":" << doubles_json(last_topology_features_) << "}"
+         << ",\"coverage_feature_schema\":\"candidate-coverage-v1\""
+         << ",\"coverage_features\":" << doubles_json(last_coverage_features_)
          << ",\"q_top1\":" << last_q_top1_
          << ",\"q_cov\":";
-    if (calibrated_reliability_) {
+    if (calibrated_coverage_ && !last_coverage_features_.empty()) {
       data << json_number(last_q_cov_);
     } else {
       data << "null";
@@ -2285,10 +2340,10 @@ private:
   LogisticModel visual_model_;
   LogisticModel pose_model_;
   LogisticModel topology_model_;
+  LogisticModel coverage_model_;
   bool calibrated_reliability_{false};
+  bool calibrated_coverage_{false};
   double calibration_temperature_{1.0};
-  double coverage_slope_{1.0};
-  double coverage_intercept_{0.0};
   bool baseline_parameter_declared_{false};
   bool calibration_ready_{false};
   int rejected_pairs_{0};
@@ -2355,6 +2410,7 @@ private:
   std::vector<double> last_visual_features_;
   std::vector<double> last_pose_features_;
   std::vector<double> last_topology_features_;
+  std::vector<double> last_coverage_features_;
   std::vector<TrajectorySample> trajectory_samples_;
   LoopClosure last_loop_closure_;
   cv::Ptr<cv::ORB> orb_;

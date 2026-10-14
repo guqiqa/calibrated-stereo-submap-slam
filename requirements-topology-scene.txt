@@ -4,6 +4,6 @@
 Shapely==2.1.2
 networkx==3.4.2
 PyYAML==6.0.2
-Jinja2==3.0.3
+Jinja2==3.1.6
 matplotlib==3.10.9
-Pillow==9.0.1
+Pillow==12.2.0

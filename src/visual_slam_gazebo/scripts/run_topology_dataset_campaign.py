@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 def parse_args():
@@ -19,7 +20,9 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=None,
                         help="override route-derived timeout for smoke tests")
     parser.add_argument("--query-routes", nargs="+", default=[
-        "query_normal_01", "query_reverse_ring", "query_cross_hall",
+        "query_same_view_inner", "query_same_view_outer",
+        "query_reverse_inner", "query_reverse_outer",
+        "query_cross_inner_outer", "query_cross_hall",
         "query_cold_start", "query_none_of_the_above"])
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--include-variants", action="store_true")
@@ -30,6 +33,7 @@ def parse_args():
     parser.add_argument("--calibration-model")
     parser.add_argument("--skip-mapping", action="store_true",
                         help="reuse an existing map database under each layout output")
+    parser.add_argument("--min-capture-separation-s", type=float, default=5.0)
     return parser.parse_args()
 
 
@@ -100,9 +104,18 @@ def main():
     if args.dry_run:
         print(json.dumps({"jobs": jobs}, indent=2, ensure_ascii=False))
         return
+    last_mapping_completed_at = None
     for index, command in enumerate(jobs, 1):
+        mode_index = command.index("--map-database-mode") if "--map-database-mode" in command else -1
+        database_mode = command[mode_index + 1] if mode_index >= 0 else "online"
+        if database_mode == "load" and last_mapping_completed_at is not None:
+            remaining = args.min_capture_separation_s - (time.monotonic() - last_mapping_completed_at)
+            if remaining > 0:
+                time.sleep(remaining)
         print(f"[{index}/{len(jobs)}] {' '.join(command)}", flush=True)
         subprocess.run(command, check=True)
+        if database_mode == "build":
+            last_mapping_completed_at = time.monotonic()
 
 
 if __name__ == "__main__":

@@ -84,7 +84,8 @@ python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
   --output generated_scenes/perturbed_ring_2103 --validate --preview
 ```
 
-前置验证默认只生成 6 个基础布局及 12 个障碍变体：
+当前 schema v2 使用通道 5 m、1.5 m 重叠，大厅 7 m 网格和 3 m 路口子地图。
+先生成 1 个场景完成 smoke；通过后，前置验证才生成 6 个基础布局及 12 个障碍变体：
 
 ```bash
 python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
@@ -100,6 +101,8 @@ python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
 ```
 
 详细格式、实验接入和验证命令见 `docs/topology_scene_generator.md`。
+分类 query 共八条，分别覆盖内外环同向、内外环反向、跨环、跨大厅、冷启动和
+none-of-the-above；空间与视角条件按任务类型和检索机会帧检查。
 
 ## 自动实验
 

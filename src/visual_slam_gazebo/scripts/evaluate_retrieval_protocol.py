@@ -47,6 +47,10 @@ def event(item):
         "candidate_coverage_reason": item.get("candidate_coverage_reason", "label_unavailable"),
         "legal_submaps": item.get("legal_submaps", []),
         "none_of_the_above": item.get("none_of_the_above"),
+        "query_route": item.get("query_route"),
+        "query_waypoint": item.get("query_waypoint"),
+        "query_type": item.get("query_type", "unlabeled"),
+        "frame_role": item.get("frame_role", "unlabeled"),
         "coverage_label_available": label_available,
         "evaluation_eligible": bool(item.get("evaluation_eligible", item.get("state") == "tracking")),
         "geometry_verified": item.get("geometry_verified"),
@@ -101,6 +105,7 @@ def main():
         "geometry_verification_available_fraction": (sum(item["geometry_verification_available"] for item in events) / len(events)
                                                      if events else 0.0),
         "calibrated_event_fraction": len(calibrated) / len(events) if events else 0.0,
+        "by_query_type": {},
     }
     if top1_labeled:
         labels = [item["top1_correct"] for item in top1_labeled]
@@ -118,6 +123,33 @@ def main():
         confidences = [item["q_cov"] for item in coverage_labeled]
         metrics["coverage"].update(ece=ece(labels, confidences), brier=brier_score(labels, confidences),
                                    nll=nll(labels, confidences))
+    condition_curve_rows = []
+    for query_type in sorted({item["query_type"] for item in calibrated}):
+        group = [item for item in calibrated if item["query_type"] == query_type]
+        group_top1 = [item for item in group
+                      if item["top1_correct"] is not None and item.get("q_top1") is not None]
+        group_coverage = [item for item in group
+                          if item["candidate_covered"] is not None and item.get("q_cov") is not None]
+        condition = {"events": len(group), "status": "available" if group_top1 and group_coverage else "unavailable",
+                     "top1": None, "coverage": None}
+        if group_top1:
+            labels = [item["top1_correct"] for item in group_top1]
+            confidences = [item["q_top1"] for item in group_top1]
+            curve = risk_coverage_curve(labels, confidences)
+            condition["top1"] = {"sample_count": len(group_top1), "ece": ece(labels, confidences),
+                                 "brier": brier_score(labels, confidences), "nll": nll(labels, confidences)}
+            condition_curve_rows.extend({"query_type": query_type, **point}
+                                        for point in curve["points"])
+        if group_coverage:
+            labels = [item["candidate_covered"] for item in group_coverage]
+            confidences = [item["q_cov"] for item in group_coverage]
+            condition["coverage"] = {"sample_count": len(group_coverage), "ece": ece(labels, confidences),
+                                     "brier": brier_score(labels, confidences), "nll": nll(labels, confidences)}
+        metrics["by_query_type"][query_type] = condition
+    with (output / "risk_coverage_by_condition.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["query_type", "coverage", "risk", "count"])
+        writer.writeheader()
+        writer.writerows(condition_curve_rows)
     (output / "calibration_metrics.json").write_text(json.dumps(metrics, indent=2, ensure_ascii=True), encoding="utf-8")
 
     summary = {
@@ -127,7 +159,24 @@ def main():
         "reject_reasons": {},
         "candidate_coverage": None if not any(item["coverage_label_available"] for item in events) else "see retrieval_events.jsonl",
         "calibration": metrics,
+        "by_query_type": {},
     }
+    for query_type in sorted({item["query_type"] for item in events}):
+        group = [item for item in events if item["query_type"] == query_type]
+        labeled = [item for item in group if item["coverage_label_available"]]
+        summary["by_query_type"][query_type] = {
+            "events": len(group),
+            "retrieval_opportunities": sum(
+                item["frame_role"] == "retrieval_opportunity_frame" for item in group),
+            "candidate_coverage": (sum(bool(item["candidate_covered"]) for item in labeled) /
+                                   len(labeled) if labeled else None),
+            "top1_accuracy": (sum(bool(item["top1_correct"]) for item in labeled) /
+                              len(labeled) if labeled else None),
+            "geometry_success_rate": (sum(bool(item["geometry_verified"]) for item in group) /
+                                      len(group) if group else None),
+            "rejection_rate": (sum(bool(item["reject_reason"]) for item in group) /
+                               len(group) if group else None),
+        }
     for item in events:
         reason = item["reject_reason"]
         summary["reject_reasons"][reason] = summary["reject_reasons"].get(reason, 0) + 1

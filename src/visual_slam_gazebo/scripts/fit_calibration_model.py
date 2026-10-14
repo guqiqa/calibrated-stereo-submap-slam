@@ -8,6 +8,26 @@ import math
 from pathlib import Path
 
 
+QUERY_TYPES = {"mapped_same_view", "mapped_reverse_view", "mapped_crossing",
+               "cold_start", "none_of_the_above"}
+
+COVERAGE_FEATURE_SCHEMA = "candidate-coverage-v1"
+COVERAGE_FEATURE_NAMES = [
+    "candidate_count",
+    "visual_source_count",
+    "pose_source_count",
+    "topology_source_count",
+    "max_fusion_score",
+    "fusion_top1_top2_margin",
+    "max_visual_score",
+    "max_pose_score",
+    "max_topology_score",
+    "visual_unavailable",
+    "pose_unavailable",
+    "topology_unavailable",
+]
+
+
 def sigmoid(value):
     return 1.0 / (1.0 + math.exp(-max(-40.0, min(40.0, value))))
 
@@ -20,7 +40,10 @@ def load_rows(root):
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if row.get("coverage_label_available") and row.get("evaluation_eligible", row.get("state") == "tracking"):
+            if (row.get("query_type") in QUERY_TYPES and
+                    row.get("frame_role") != "mapping_frame" and
+                    row.get("coverage_label_available") and
+                    row.get("evaluation_eligible", row.get("state") == "tracking")):
                 rows.append(row)
     return rows
 
@@ -68,6 +91,22 @@ def evidence_samples(rows, name):
     return result
 
 
+def coverage_samples(rows):
+    result = []
+    for row in rows:
+        features = row.get("coverage_features")
+        label = row.get("candidate_covered")
+        if not isinstance(features, list) or len(features) != len(COVERAGE_FEATURE_NAMES):
+            continue
+        try:
+            values = [float(value) for value in features]
+        except (TypeError, ValueError):
+            continue
+        if label is not None and all(math.isfinite(value) for value in values):
+            result.append((values, bool(label)))
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status-root", required=True)
@@ -92,6 +131,9 @@ def main():
         if not args.base_model:
             raise SystemExit("confidence stage requires --base-model")
         base = json.loads(Path(args.base_model).read_text(encoding="utf-8"))
+        if (base.get("stage") != "reliability" or
+                base.get("protocol_version") != "c1-c4-p-typed-query-v2"):
+            raise SystemExit("base model must be a typed-query-v2 reliability model")
         models = base["reliability_models"]
         counts = base.get("sample_counts", {})
         base_version = base.get("version")
@@ -99,11 +141,11 @@ def main():
             raise SystemExit("confidence rows were not produced with the supplied stage-1 model")
     top1 = [(row.get("candidate_fusion_scores"), row.get("top1_correct")) for row in rows
             if row.get("candidate_fusion_scores") and row.get("top1_correct") is not None]
-    coverage = [(row.get("q_top1"), row.get("candidate_covered")) for row in rows
-                if row.get("q_top1") is not None and row.get("candidate_covered") is not None]
     temperature = 1.0
-    coverage_coefficients = [1.0, 0.0]
-    if args.stage == "confidence" and top1:
+    coverage_model = None
+    if args.stage == "confidence":
+        if not top1:
+            raise SystemExit("confidence calibration requires labeled Top-1 samples")
         def loss(value):
             total = 0.0
             for scores, label in top1:
@@ -113,29 +155,28 @@ def main():
                 total -= int(bool(label)) * math.log(calibrated) + (1 - int(bool(label))) * math.log(1 - calibrated)
             return total / len(top1)
         temperature = min((0.25 + index * 0.05 for index in range(76)), key=loss)
-        coverage_samples = []
-        for probability, label in coverage:
-            probability = min(1 - 1e-6, max(1e-6, float(probability)))
-            coverage_samples.append(([math.log(probability / (1 - probability))], label))
-        coverage_model = fit_logistic(coverage_samples, l2=args.l2)
-        coverage_coefficients = [coverage_model["weights"][0] / coverage_model["scale"][0],
-                                 coverage_model["intercept"] -
-                                 coverage_model["weights"][0] * coverage_model["mean"][0] /
-                                 coverage_model["scale"][0]]
+        samples = coverage_samples(rows)
+        counts["coverage"] = len(samples)
+        coverage_model = fit_logistic(samples, l2=args.l2)
     digest = hashlib.sha256()
     for path in sorted(Path(args.status_root).rglob("status.jsonl")):
         digest.update(path.read_bytes())
     model = {
         "version": args.version,
-        "schema_version": 1,
+        "schema_version": 2,
+        "protocol_version": "c1-c4-p-typed-query-v2",
         "stage": args.stage,
         "reliability_models": models,
         "temperature": temperature,
-        "coverage_logistic": coverage_coefficients,
+        "coverage_feature_schema": COVERAGE_FEATURE_SCHEMA,
+        "coverage_feature_names": COVERAGE_FEATURE_NAMES,
+        "coverage_model": coverage_model,
         "l2": args.l2,
         "source_sha256": digest.hexdigest(),
         "source_root": str(Path(args.status_root).resolve()),
         "sample_counts": counts,
+        "query_type_counts": {name: sum(row.get("query_type") == name for row in rows)
+                              for name in sorted(QUERY_TYPES)},
     }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -143,6 +184,8 @@ def main():
     (output / "calibration_version.txt").write_text(args.version + "\n", encoding="utf-8")
     report = {"status": "passed", "version": args.version, "stage": args.stage, "rows": len(rows),
               "sample_counts": counts, "temperature": temperature,
+              "query_type_counts": {name: sum(row.get("query_type") == name for row in rows)
+                                    for name in sorted(QUERY_TYPES)},
               "source_sha256": digest.hexdigest()}
     (output / "calibration_fit_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))

@@ -1,7 +1,7 @@
 # 大厅—双环—径向通道地图生成器
 
 生成器从同一个 NetworkX/Shapely 场景对象导出 Gazebo Classic world、Open-RMF
-building map、拓扑图、固定子地图、合法标签、mapping/query 路线、占据栅格和预览图。
+building map、拓扑图、异构子地图、合法标签、mapping/query 路线、占据栅格和预览图。
 Open-RMF 转换器是可选后端；当前机器未安装系统级
 `rmf_building_map_tools` 时，`building.yaml` 仍会保存，Gazebo world 由同一场景对象直接导出。
 
@@ -52,7 +52,7 @@ source install/setup.bash
 python3 src/visual_slam_gazebo/scripts/experiment_manager.py \
   --project topology_scene_smoke \
   --scene-manifest generated_scenes/perturbed_ring_2103/scene_manifest.json \
-  --waypoint-route generated_scenes/perturbed_ring_2103/query_routes/query_normal_01.csv \
+  --waypoint-route generated_scenes/perturbed_ring_2103/query_routes/query_same_view_inner.csv \
   --methods c1 c4 p --runs 1 --gui --record --analyze --archive --shutdown-gazebo
 ```
 
@@ -74,8 +74,10 @@ export GAZEBO_MODEL_PATH=$PWD/src/visual_slam_gazebo/models:/usr/share/gazebo-11
 gz sdf -k generated_scenes/perturbed_ring_2103/scene.world
 ```
 
-自动验证覆盖图连通性、环路、径向连接数、声明死端、子地图重叠结构、多合法子地图、
-none-of-the-above、障碍变量隔离和确定性。`candidate_coverage_miss` 必须在运行候选检索后由
+通道子地图保持 `5 m/1.5 m`，大厅使用 `7 m/1.5 m` 网格，路口使用半径 `3 m` 的
+junction 子地图。邻接由拓扑连接和最小重叠面积共同确定。自动验证覆盖图连通性、环路、
+径向连接数、声明死端、三类子地图、合法集合数量、none-of-the-above、障碍变量隔离和确定性。
+`candidate_coverage_miss` 必须在运行候选检索后由
 “合法集合与实际候选集合”比较得出，生成器不会预先伪造该结果。
 
 按冻结划分批量运行可先执行 dry-run：
@@ -91,14 +93,7 @@ python3 src/visual_slam_gazebo/scripts/run_topology_dataset_campaign.py \
 
 ## 当前接口边界
 
-生成器输出的 `submaps.json` 和 `candidate_ground_truth.jsonl` 是数据集真值。当前 C++ 在线
-SLAM 仍按累计视觉距离建立内部子地图编号，尚未加载生成场景的 `submaps.json`，两套 ID
-不能默认视为一致。完成显式 ID 对齐层之前：
-
-- 可运行场景、路线、C1/C4/P 和几何验证；
-- 可评估跟踪、尺度、轨迹、延迟和活动工作集；
-- `candidate_coverage_miss` 保持空值；
-- ECE、Brier、NLL 和风险-覆盖率必须报告为 `unavailable`，不得用生成标签伪造在线候选结果。
-
-下一阶段应让在线检索加载 `submaps.json`，或在 world 位姿和在线距离型子地图之间建立经过
-验证的一一映射，再将实际候选集合与合法集合逐帧关联。
+在线节点已加载 `submaps.json` 并维护显式的 `runtime_id -> scene_id` 映射。在线状态不使用
+仿真真值；实验记录器仅在旁路用 world 真值生成 `legal_submaps`、coverage 和 query 帧角色。
+旧场景、旧距离型子地图数据库和旧 query 标签不兼容新 schema，必须重新生成，且不得作为
+正式 calibration/test 证据。

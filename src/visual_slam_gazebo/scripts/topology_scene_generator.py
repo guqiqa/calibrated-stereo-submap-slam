@@ -25,7 +25,7 @@ from shapely.ops import unary_union
 
 FAMILIES = ("regular_baseline", "perturbed_ring", "asymmetric_extension")
 OBSTACLE_MODES = ("none", "visual_only", "topology_change")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def json_ready(value):
@@ -112,8 +112,13 @@ class TopologyScene:
         self.obstacles = []
         self.submaps = []
         self.routes = {}
+        self.mapping_node_path = []
         self.feature_points = []
         self.parameters = self._resolve_parameters()
+
+    @property
+    def map_version(self):
+        return f"{self.family}-{self.seed}-{self.obstacle_mode}-heterogeneous-v2"
 
     def _resolve_parameters(self):
         geometry = dict(self.config["geometry"])
@@ -132,6 +137,14 @@ class TopologyScene:
             geometry["outer_half_extent_m"] *= self.random.uniform(0.94, 1.10)
             geometry["radial_count"] = self.random.choice([6, 8])
             geometry["radial_width_m"] = self.random.choice(geometry["radial_widths_m"])
+        # Keep distinct hall-entry and inner-ring junction regions even for the
+        # 28 m hall variant. Otherwise two 3 m junction maps overlap almost
+        # completely and make four or more maps legal along a whole connector.
+        minimum_inner_extent = geometry["hall_size_m"] / 2.0 + 6.5
+        geometry["inner_half_extent_m"] = max(
+            geometry["inner_half_extent_m"], minimum_inner_extent)
+        geometry["outer_half_extent_m"] = max(
+            geometry["outer_half_extent_m"], geometry["inner_half_extent_m"] + 10.0)
         geometry["inner_half_extent_y_m"] = geometry["inner_half_extent_m"] * (
             self.random.uniform(0.90, 1.10) if self.family != "regular_baseline" else 1.0)
         geometry["outer_half_extent_y_m"] = geometry["outer_half_extent_m"] * (
@@ -315,41 +328,122 @@ class TopologyScene:
         length = float(self.parameters["submaps"]["length_m"])
         overlap = float(self.parameters["submaps"]["overlap_m"])
         step = length - overlap
-        submap_id = 0
+        hall_cell_size = float(self.parameters["submaps"]["hall_cell_size_m"])
+        hall_overlap = float(self.parameters["submaps"]["hall_overlap_m"])
+        junction_radius = float(self.parameters["submaps"]["junction_radius_m"])
+        corridor_junction_overlap = float(
+            self.parameters["submaps"]["corridor_junction_overlap_m"])
+        minimum_overlap = float(
+            self.parameters["submaps"]["minimum_neighbor_overlap_area_m2"])
+        map_version = self.map_version
+        open_graph = self.open_graph()
+
+        def is_junction(node):
+            data = self.graph.nodes[node]
+            if node == "hall_center":
+                return False
+            if open_graph.degree(node) >= 3 or data["region"] == "hall":
+                return True
+            neighbors = list(open_graph.neighbors(node))
+            if len(neighbors) != 2:
+                return False
+            vectors = [(self.graph.nodes[neighbor]["x"] - data["x"],
+                        self.graph.nodes[neighbor]["y"] - data["y"])
+                       for neighbor in neighbors]
+            headings = [math.atan2(y, x) for x, y in vectors]
+            angle = abs(math.degrees(math.atan2(
+                math.sin(headings[0] - headings[1]), math.cos(headings[0] - headings[1]))))
+            return abs(180.0 - angle) > 15.0
+
+        junction_nodes = {node for node in open_graph if is_junction(node)}
+        region_edge_index = {}
         for u, v, data in sorted(self.graph.edges(data=True)):
-            if not data["open"]:
+            if not data["open"] or data["region"] == "hall":
                 continue
             line = self.edge_lines[tuple(sorted((u, v)))]
-            start = 0.0
-            while start < line.length - 1e-6:
-                end = min(line.length, start + length)
+            trim_start = (junction_radius - corridor_junction_overlap
+                          if u in junction_nodes else 0.0)
+            trim_end = (junction_radius - corridor_junction_overlap
+                        if v in junction_nodes else 0.0)
+            usable_end = line.length - max(0.0, trim_end)
+            start = max(0.0, trim_start)
+            if usable_end <= start + 0.1:
+                continue
+            edge_index = region_edge_index.get(data["region"], 0)
+            region_edge_index[data["region"]] = edge_index + 1
+            region_token = data["region"].replace("radial_", "")
+            prefix = "radial" if data["region"].startswith("radial") else "corridor"
+            if data["region"] == "side_branch":
+                region_token = "side"
+            segment_index = 0
+            while start < usable_end - 1e-6:
+                end = min(usable_end, start + length)
                 segment = LineString([
                     line.interpolate(start), line.interpolate(end)
                 ])
                 polygon = segment.buffer(data["width"] / 2.0, cap_style=2).intersection(self.free_space)
                 self.submaps.append({
-                    "id": f"submap_{submap_id:04d}", "kind": "corridor", "edge": [u, v],
+                    "id": f"{prefix}_{region_token}_{edge_index:02d}_{segment_index:03d}",
+                    "kind": "corridor", "edge": [u, v],
                     "region": data["region"], "start_m": start, "end_m": end,
                     "center": [segment.centroid.x, segment.centroid.y], "polygon": polygon,
+                    "map_version": map_version,
                 })
-                submap_id += 1
-                if end >= line.length:
+                segment_index += 1
+                if end >= usable_end:
                     break
                 start += step
-        for node, data in sorted(self.graph.nodes(data=True)):
-            if self.open_graph().degree(node) < 3:
-                continue
-            radius = max(2.0, min(3.5, self.parameters["geometry"]["radial_width_m"] * 0.6))
-            polygon = Point(data["x"], data["y"]).buffer(radius).intersection(self.free_space)
-            self.submaps.append({"id": f"submap_{submap_id:04d}", "kind": "junction",
+
+        hall_size = float(self.parameters["geometry"]["hall_size_m"])
+        hall_half = hall_size / 2.0
+        hall_cells = max(1, math.ceil(hall_size / hall_cell_size))
+        base_cell = hall_size / hall_cells
+        for row in range(hall_cells):
+            for column in range(hall_cells):
+                x0 = max(-hall_half, -hall_half + column * base_cell - hall_overlap / 2.0)
+                x1 = min(hall_half, -hall_half + (column + 1) * base_cell + hall_overlap / 2.0)
+                y0 = max(-hall_half, -hall_half + row * base_cell - hall_overlap / 2.0)
+                y1 = min(hall_half, -hall_half + (row + 1) * base_cell + hall_overlap / 2.0)
+                polygon = box(x0, y0, x1, y1).intersection(self.free_space)
+                self.submaps.append({
+                    "id": f"hall_r{row:02d}_c{column:02d}", "kind": "hall",
+                    "region": "central_hall", "grid_row": row, "grid_column": column,
+                    "center": [polygon.centroid.x, polygon.centroid.y], "polygon": polygon,
+                    "map_version": map_version,
+                })
+
+        for node in sorted(junction_nodes):
+            data = self.graph.nodes[node]
+            polygon = Point(data["x"], data["y"]).buffer(junction_radius).intersection(self.free_space)
+            self.submaps.append({"id": f"junction_{node}", "kind": "junction",
                                  "node": node, "region": data["region"], "center": [data["x"], data["y"]],
-                                 "polygon": polygon})
-            submap_id += 1
+                                 "polygon": polygon, "map_version": map_version})
+
+        for numeric_id, item in enumerate(self.submaps):
+            item["numeric_id"] = numeric_id
         for item in self.submaps:
             item["neighbors"] = []
+
+        def topologically_connected(left, right):
+            kinds = {left["kind"], right["kind"]}
+            if kinds == {"hall"}:
+                return (abs(left["grid_row"] - right["grid_row"]) +
+                        abs(left["grid_column"] - right["grid_column"])) == 1
+            if kinds == {"corridor"}:
+                return left.get("edge") == right.get("edge")
+            if kinds == {"corridor", "junction"}:
+                corridor = left if left["kind"] == "corridor" else right
+                junction = right if right["kind"] == "junction" else left
+                return junction.get("node") in corridor.get("edge", [])
+            if kinds == {"hall", "junction"}:
+                junction = right if right["kind"] == "junction" else left
+                return self.graph.nodes[junction["node"]]["region"] == "hall"
+            return False
+
         for index, left in enumerate(self.submaps):
             for right in self.submaps[index + 1:]:
-                if left["polygon"].intersection(right["polygon"]).area > 0.05:
+                overlap_area = left["polygon"].intersection(right["polygon"]).area
+                if overlap_area >= minimum_overlap and topologically_connected(left, right):
                     left["neighbors"].append(right["id"])
                     right["neighbors"].append(left["id"])
 
@@ -358,10 +452,7 @@ class TopologyScene:
         added = 0
         for index, left in enumerate(self.submaps):
             for right in self.submaps[index + 1:]:
-                intended = (
-                    (left.get("edge") is not None and left.get("edge") == right.get("edge")) or
-                    left["kind"] == "junction" or right["kind"] == "junction"
-                )
+                intended = right["id"] in left.get("neighbors", [])
                 if not intended:
                     continue
                 overlap = left["polygon"].intersection(right["polygon"])
@@ -391,8 +482,9 @@ class TopologyScene:
             points.extend(edge_points if not points else edge_points[1:])
         return points
 
-    def _route_rows(self, name, points, query_type="mapped"):
+    def _route_rows(self, name, points, query_type="mapping"):
         rows = []
+        previous_legal = None
         for index, (x, y) in enumerate(points):
             if index + 1 < len(points):
                 nx_, ny_ = points[index + 1]
@@ -403,45 +495,170 @@ class TopologyScene:
                 nx_, ny_ = x + 1.0, y
             yaw = math.atan2(ny_ - y, nx_ - x)
             legal = [item["id"] for item in self.submaps if item["polygon"].covers(Point(x, y))]
+            if query_type == "mapping":
+                frame_role = "mapping_frame"
+            elif query_type == "none_of_the_above":
+                frame_role = "ood_frame"
+            elif query_type == "cold_start":
+                frame_role = "relocalization_frame"
+            else:
+                at_transition = (index in {0, len(points) - 1} or
+                                 (previous_legal is not None and legal != previous_legal))
+                frame_role = ("retrieval_opportunity_frame" if at_transition
+                              else "transition_frame")
             rows.append({"route": name, "waypoint": index, "x": x, "y": y, "yaw": yaw,
-                         "query_type": query_type, "legal_submaps": legal})
+                         "query_type": query_type, "frame_role": frame_role,
+                         "legal_submaps": legal})
+            previous_legal = legal
         return rows
+
+    @staticmethod
+    def _phase_shift(points, amount=1):
+        if len(points) <= amount + 1:
+            return points
+        closed = math.hypot(points[0][0] - points[-1][0], points[0][1] - points[-1][1]) < 1e-6
+        if closed:
+            body = points[:-1]
+            shifted = body[amount:] + body[:amount]
+            return shifted + [shifted[0]]
+        return points[amount:]
+
+    def _finalize_query_roles(self):
+        mapping = self.routes["mapping_route"]
+        thresholds = {"mapped_reverse_view": 120.0, "mapped_crossing": 30.0}
+        for name, rows in self.routes.items():
+            if name == "mapping_route" or not rows:
+                continue
+            threshold = thresholds.get(rows[0]["query_type"])
+            if threshold is None:
+                continue
+            for row in rows:
+                if row["frame_role"] != "retrieval_opportunity_frame":
+                    continue
+                distances = [(math.hypot(row["x"] - item["x"], row["y"] - item["y"]), item)
+                             for item in mapping]
+                minimum = min(distance for distance, _ in distances)
+                nearest = [item for distance, item in distances if distance <= minimum + 1e-6]
+                view = min(abs(math.degrees(math.atan2(
+                    math.sin(row["yaw"] - item["yaw"]),
+                    math.cos(row["yaw"] - item["yaw"])))) for item in nearest)
+                if view < threshold:
+                    row["frame_role"] = "transition_frame"
 
     def _build_routes(self):
         graph = self.open_graph()
-        multi = nx.MultiGraph(graph)
-        eulerized = nx.eulerize(multi)
-        circuit = list(nx.eulerian_circuit(eulerized, source="hall_center"))
-        mapping_nodes = [circuit[0][0]] + [v for _, v in circuit]
-        mapping_points = self._node_path_points(mapping_nodes)
-        self.routes["mapping_route"] = self._route_rows("mapping_route", mapping_points)
-
         outer = [node for node, data in graph.nodes(data=True) if data["region"] == "outer"]
         inner = [node for node, data in graph.nodes(data=True) if data["region"] == "inner"]
         endpoints = sorted(outer, key=lambda node: math.atan2(graph.nodes[node]["y"], graph.nodes[node]["x"]))
         query_specs = []
-        for index in range(int(self.parameters["routes"]["query_count"])):
-            target = endpoints[(index * max(1, len(endpoints) // 3)) % len(endpoints)]
-            nodes = nx.shortest_path(graph, "hall_center", target, weight="length")
-            if index % 2:
-                nodes = list(reversed(nodes))
-            query_specs.append((f"query_normal_{index + 1:02d}", nodes, "mapped"))
-        outer_cycle = nx.cycle_basis(graph.subgraph(outer))
-        if outer_cycle:
-            cycle = outer_cycle[0] + [outer_cycle[0][0]]
-            query_specs.append(("query_reverse_ring", list(reversed(cycle)), "mapped"))
+
+        def canonical_cycle(region_nodes):
+            region_graph = graph.subgraph(region_nodes)
+            cycles = nx.cycle_basis(region_graph)
+            if not cycles:
+                endpoints = sorted(node for node in region_graph if region_graph.degree(node) == 1)
+                if len(endpoints) < 2:
+                    return []
+                forward = nx.shortest_path(region_graph, endpoints[0], endpoints[-1])
+                reverse = list(reversed(forward))
+                return min(forward, reverse)
+            cycle = cycles[0]
+            connector = min((node for node in cycle if any(
+                graph.nodes[neighbor]["region"] not in {graph.nodes[node]["region"]}
+                for neighbor in graph.neighbors(node))), default=min(cycle))
+            index = cycle.index(connector)
+            forward = cycle[index:] + cycle[:index]
+            reverse_cycle = list(reversed(cycle))
+            reverse_index = reverse_cycle.index(connector)
+            reverse = reverse_cycle[reverse_index:] + reverse_cycle[:reverse_index]
+            selected = min(forward, reverse)
+            return selected + [selected[0]]
+
+        inner_path = canonical_cycle(inner)
+        outer_path = canonical_cycle(outer)
+
+        mapping_nodes = ["hall_center"]
+        hall_nodes = sorted(node for node, data in graph.nodes(data=True)
+                            if data["region"] == "hall" and node != "hall_center")
+        for hall_node in hall_nodes:
+            inner_neighbors = sorted(node for node in graph.neighbors(hall_node)
+                                     if graph.nodes[node]["region"] == "inner")
+            if not inner_neighbors:
+                continue
+            mapping_nodes.extend([hall_node, inner_neighbors[0], hall_node, "hall_center"])
+        if inner_path:
+            mapping_nodes.extend(nx.shortest_path(
+                graph, mapping_nodes[-1], inner_path[0], weight="length")[1:])
+            mapping_nodes.extend(inner_path[1:])
+        if outer_path:
+            mapping_nodes.extend(nx.shortest_path(
+                graph, mapping_nodes[-1], outer_path[0], weight="length")[1:])
+            first_outer = outer_path[0]
+            inner_neighbors = sorted(node for node in graph.neighbors(first_outer)
+                                     if graph.nodes[node]["region"] == "inner")
+            if inner_neighbors:
+                mapping_nodes.extend([inner_neighbors[0], first_outer])
+            branch_neighbors = sorted(node for node in graph.neighbors(first_outer)
+                                      if graph.nodes[node]["region"] == "side_branch")
+            for branch in branch_neighbors:
+                mapping_nodes.extend([branch, first_outer])
+            for outer_node in outer_path[1:]:
+                mapping_nodes.append(outer_node)
+                if outer_node == outer_path[-1]:
+                    continue
+                inner_neighbors = sorted(node for node in graph.neighbors(outer_node)
+                                         if graph.nodes[node]["region"] == "inner")
+                if inner_neighbors:
+                    mapping_nodes.extend([inner_neighbors[0], outer_node])
+                branch_neighbors = sorted(node for node in graph.neighbors(outer_node)
+                                          if graph.nodes[node]["region"] == "side_branch")
+                for branch in branch_neighbors:
+                    mapping_nodes.extend([branch, outer_node])
+        mapped_edges = {tuple(sorted(pair)) for pair in zip(mapping_nodes, mapping_nodes[1:])}
+        for left, right in sorted(graph.edges()):
+            if tuple(sorted((left, right))) in mapped_edges:
+                continue
+            path = nx.shortest_path(graph, mapping_nodes[-1], left, weight="length")
+            mapping_nodes.extend(path[1:])
+            mapping_nodes.append(right)
+            mapped_edges.update(tuple(sorted(pair)) for pair in zip(path, path[1:]))
+            mapped_edges.add(tuple(sorted((left, right))))
+        mapping_nodes.extend(nx.shortest_path(
+            graph, mapping_nodes[-1], "hall_center", weight="length")[1:])
+        self.mapping_node_path = mapping_nodes
+        mapping_points = self._node_path_points(mapping_nodes)
+        self.routes["mapping_route"] = self._route_rows("mapping_route", mapping_points, "mapping")
+
+        if inner_path:
+            cycle = inner_path
+            query_specs.extend([
+                ("query_same_view_inner", cycle, "mapped_same_view"),
+                ("query_reverse_inner", list(reversed(cycle)), "mapped_reverse_view"),
+            ])
+        if outer_path:
+            cycle = outer_path
+            query_specs.extend([
+                ("query_same_view_outer", cycle, "mapped_same_view"),
+                ("query_reverse_outer", list(reversed(cycle)), "mapped_reverse_view"),
+            ])
         if inner and outer:
             cross = nx.shortest_path(graph, inner[0], outer[len(outer) // 2], weight="length")
-            query_specs.append(("query_cross_hall", cross, "mapped"))
+            query_specs.append(("query_cross_inner_outer", cross, "mapped_crossing"))
+            if len(endpoints) >= 2:
+                across_hall = nx.shortest_path(
+                    graph, endpoints[0], endpoints[len(endpoints) // 2], weight="length")
+                query_specs.append(("query_cross_hall", across_hall, "mapped_crossing"))
             query_specs.append(("query_cold_start", nx.shortest_path(graph, outer[-1], "hall_center", weight="length"), "cold_start"))
         lateral = float(self.parameters["routes"]["lateral_offset_m"])
         for index, (name, nodes, query_type) in enumerate(query_specs):
-            self.routes[name] = self._route_rows(name, self._node_path_points(nodes, lateral if index % 2 == 0 else -lateral), query_type)
+            points = self._node_path_points(nodes, lateral if index % 2 == 0 else -lateral)
+            self.routes[name] = self._route_rows(name, self._phase_shift(points), query_type)
 
         max_x = self.free_space.bounds[2]
         none_points = [(max_x + 2.0 + i * 0.5, self.free_space.centroid.y) for i in range(12)]
         self.routes["query_none_of_the_above"] = self._route_rows(
             "query_none_of_the_above", none_points, "none_of_the_above")
+        self._finalize_query_roles()
 
     def validation(self):
         open_graph = self.open_graph()
@@ -470,16 +687,25 @@ class TopologyScene:
                            for name, rows in self.routes.items()
                            if name not in {"mapping_route", "query_none_of_the_above"}
                            for row in rows}
+        query_membership_counts = [len(row["legal_submaps"])
+                                   for name, rows in self.routes.items()
+                                   if name != "mapping_route" for row in rows]
+        maximum_legal = int(self.parameters["submaps"]["max_legal_submaps"])
+        overflow_count = sum(value > maximum_legal for value in query_membership_counts)
+        overflow_fraction = (overflow_count / len(query_membership_counts)
+                             if query_membership_counts else 1.0)
+        maximum_overflow_fraction = float(
+            self.parameters["submaps"]["max_overflow_fraction"])
+        mapped_edges = {tuple(sorted((left, right)))
+                        for left, right in zip(self.mapping_node_path, self.mapping_node_path[1:])}
+        open_edges = {tuple(sorted((left, right))) for left, right in open_graph.edges()}
         for index, left in enumerate(self.submaps):
             for right in self.submaps[index + 1:]:
                 overlap = left["polygon"].intersection(right["polygon"])
                 if overlap.area <= 0.05:
                     continue
                 overlap_pairs += 1
-                intended_overlap = (
-                    (left.get("edge") is not None and left.get("edge") == right.get("edge")) or
-                    left["kind"] == "junction" or right["kind"] == "junction"
-                )
+                intended_overlap = right["id"] in left.get("neighbors", [])
                 if not intended_overlap:
                     continue
                 nearby = sum(overlap.buffer(1.0).covers(Point(item["x"], item["y"])) for item in self.feature_points)
@@ -489,6 +715,7 @@ class TopologyScene:
             "geometry_valid": bool(self.free_space.is_valid and not self.free_space.is_empty),
             "open_graph_connected": nx.is_connected(open_graph),
             "expected_cycle_count": len(cycles) >= required_cycles,
+            "mapping_route_covers_open_edges": open_edges.issubset(mapped_edges),
             "radial_count_matches": sum(1 for _, _, data in self.graph.edges(data=True)
                                           if data["region"] == "radial_inner") == self.parameters["geometry"]["radial_count"],
             "only_declared_dead_ends": set(dead_ends).issubset(allowed_dead_ends),
@@ -496,7 +723,15 @@ class TopologyScene:
             "overlap_regions_generated": overlap_pairs > 0,
             "overlap_structure_proxy": not weak_overlaps,
             "visual_topology_conflict_pair": visual_conflict,
-            "mapping_query_pose_separation": not mapping_positions.intersection(query_positions),
+            "mapping_query_waypoints_not_identical": not mapping_positions.intersection(query_positions),
+            "normal_queries_have_legal_submaps": all(
+                row["legal_submaps"] for name, rows in self.routes.items()
+                if name not in {"mapping_route", "query_none_of_the_above"} for row in rows),
+            "query_frame_roles_present": all(
+                row.get("frame_role") in {"transition_frame", "retrieval_opportunity_frame",
+                                          "relocalization_frame", "ood_frame"}
+                for name, rows in self.routes.items() if name != "mapping_route" for row in rows),
+            "legal_submap_multiplicity_controlled": overflow_fraction <= maximum_overflow_fraction,
             "none_of_the_above_available": all(not row["legal_submaps"]
                                                 for row in self.routes["query_none_of_the_above"]),
             "visual_only_does_not_close_edges": (
@@ -515,6 +750,18 @@ class TopologyScene:
             "declared_dead_ends": declared_dead_ends,
             "topology_change_endpoints": sorted(topology_change_endpoints),
             "submap_count": len(self.submaps), "overlap_pairs": overlap_pairs,
+            "submap_kind_counts": {
+                kind: sum(item["kind"] == kind for item in self.submaps)
+                for kind in ("corridor", "hall", "junction")
+            },
+            "legal_submap_multiplicity": {
+                "maximum_allowed": maximum_legal,
+                "observed_maximum": max(query_membership_counts, default=0),
+                "overflow_count": overflow_count,
+                "sample_count": len(query_membership_counts),
+                "overflow_fraction": overflow_fraction,
+                "maximum_overflow_fraction": maximum_overflow_fraction,
+            },
             "weak_overlap_pairs": weak_overlaps,
             "bounds": list(self.free_space.bounds),
         }
@@ -552,7 +799,7 @@ class TopologyScene:
             "schema_version": SCHEMA_VERSION,
             "nodes": [{"id": node, **json_ready(data)} for node, data in self.graph.nodes(data=True)],
             "edges": [{"source": u, "target": v, **json_ready(data)} for u, v, data in self.graph.edges(data=True)],
-            "map_version": f"{self.family}-{self.seed}-{self.obstacle_mode}",
+            "map_version": self.map_version,
         }
         (output / "topology_graph.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
         graphml = nx.Graph()
@@ -578,7 +825,8 @@ class TopologyScene:
 
     @staticmethod
     def _write_route(path, rows):
-        fields = ["route", "waypoint", "x", "y", "yaw", "query_type", "legal_submaps"]
+        fields = ["route", "waypoint", "x", "y", "yaw", "query_type", "frame_role",
+                  "legal_submaps"]
         with path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
@@ -597,19 +845,20 @@ class TopologyScene:
             for row in rows:
                 labels.append({
                     "route": name, "waypoint": row["waypoint"], "x": round(row["x"], 6),
-                    "y": round(row["y"], 6), "legal_submaps": row["legal_submaps"],
+                    "y": round(row["y"], 6), "query_type": row["query_type"],
+                    "frame_role": row["frame_role"], "legal_submaps": row["legal_submaps"],
                     "coverage_label_available": True,
                     "none_of_the_above": row["query_type"] == "none_of_the_above",
                     "candidate_coverage_miss": None,
                     "geometry_verified": None, "topology_prior_correct": None,
-                    "map_version": f"{self.family}-{self.seed}-{self.obstacle_mode}",
+                    "map_version": self.map_version,
                 })
         with (output / "candidate_ground_truth.jsonl").open("w", encoding="utf-8") as handle:
             for row in labels:
                 handle.write(json.dumps(row, ensure_ascii=True) + "\n")
 
     def _write_obstacles(self, output):
-        payload = {"mode": self.obstacle_mode, "map_version": f"{self.family}-{self.seed}-{self.obstacle_mode}",
+        payload = {"mode": self.obstacle_mode, "map_version": self.map_version,
                    "obstacles": json_ready(self.obstacles),
                    "closed_edges": [[u, v] for u, v, data in self.graph.edges(data=True) if not data["open"]]}
         (output / "obstacles.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -833,7 +1082,7 @@ class TopologyScene:
         manifest = {
             "schema_version": SCHEMA_VERSION, "scene_id": f"{self.family}_{self.seed}_{self.obstacle_mode}",
             "family": self.family, "seed": self.seed, "split": self.split,
-            "obstacle_mode": self.obstacle_mode, "map_version": f"{self.family}-{self.seed}-{self.obstacle_mode}",
+            "obstacle_mode": self.obstacle_mode, "map_version": self.map_version,
             "generator_git_commit": git_value(root, "rev-parse", "HEAD"),
             "generator_git_dirty": bool(git_value(
                 root, "status", "--porcelain", "--", *generator_sources)),

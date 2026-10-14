@@ -3,7 +3,8 @@ import math
 import unittest
 
 from calibration_metrics import brier_score, ece, nll, risk_coverage_curve
-from fit_calibration_model import fit_logistic, sigmoid
+from fit_calibration_model import (COVERAGE_FEATURE_NAMES, coverage_samples,
+                                   fit_logistic, sigmoid)
 from submap_retrieval_protocol import (Candidate, Evidence, merge_candidate_sources,
                                        run_c1, run_c4, run_p)
 
@@ -80,6 +81,15 @@ class CalibrationTests(unittest.TestCase):
                        (1.5 - model["mean"][0]) / model["scale"][0])
         self.assertLess(low, 0.5)
         self.assertGreater(high, 0.5)
+
+    def test_coverage_samples_require_fixed_feature_width(self):
+        valid = [float(index) for index in range(len(COVERAGE_FEATURE_NAMES))]
+        rows = [
+            {"coverage_features": valid, "candidate_covered": True},
+            {"coverage_features": valid[:-1], "candidate_covered": False},
+            {"coverage_features": valid, "candidate_covered": None},
+        ]
+        self.assertEqual(coverage_samples(rows), [(valid, True)])
 
 
 if __name__ == "__main__":

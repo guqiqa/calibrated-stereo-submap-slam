@@ -57,19 +57,26 @@ L_i = r_v log p_v(i) + r_p log p_p(i) + r_g log p_g(i)
 
 ### G2 独立标签闭环
 
-先执行 mapping trajectory 建立固定子地图，再执行时间、位置和视角分离的 query
-trajectory。离线使用真值确定合法子地图并写入 `candidate_labels.csv`。候选覆盖定义为
+先执行 mapping trajectory 建立异构子地图并冻结地图，再执行分类 query trajectory。
+所有 query 与 mapping 分次采集且至少间隔 5 s；同向、反向、跨区、冷启动和 OOD 使用
+各自预注册条件，不再要求每帧同时满足 2 m 与 30 度。离线使用真值确定合法子地图并写入
+`candidate_labels.csv`。候选覆盖定义为
 合法子地图是否位于候选集合，禁止从 `active_submap` 推断。
 
 ### G3 校准和冻结
 
-按布局种子划分 18 个校准布局、6 个验证布局和 6 个测试布局。仅在校准/验证布局上
-拟合证据温度、可靠性函数和拒绝阈值，然后冻结 `calibration_version`。测试布局不得
-再次调参。
+按布局种子划分 12 个 development 布局、9 个 calibration 布局和 9 个测试布局。
+development 用于拟合证据可靠性，calibration 用于拟合温度、coverage 模型和拒绝阈值，
+然后冻结 `calibration_version`。测试布局不得再次调参。
+
+`q_top1` 通过候选融合分数温度校准；`q_cov` 必须使用冻结的
+`candidate-coverage-v1` 逻辑回归模型。后者输入候选总数、三路候选来源数量、融合峰值
+与 Top-1/Top-2 间隔、三路最高分和三路证据不可用标志，共 12 维，不得再从
+`q_top1` 单变量换算。
 
 ### G4 正式对比
 
-在三类拓扑、30 个布局上比较 C0/C1/C4/P。每个测试布局执行 5 条 query trajectory，
+在三类拓扑、30 个布局上比较 C0/C1/C4/P。每个测试布局执行 8 条 query trajectory，
 每条重复 3 次。报告 Recall@1/3/10、几何验证成功率、错误调用率、拒绝率、重定位
 成功率、ATE/RPE、切换跳变、平均/P95 时间、活动工作集和内存分类。
 

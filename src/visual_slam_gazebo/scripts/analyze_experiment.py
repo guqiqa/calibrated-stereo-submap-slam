@@ -10,6 +10,8 @@ import statistics
 import subprocess
 import sys
 
+from calibration_metrics import brier_score, ece, nll, risk_coverage_curve
+
 
 METHODS = ("c0", "c1", "c4", "p", "global", "fixed", "joint")
 
@@ -253,7 +255,8 @@ def optional_plots(output, records):
 
 def write_protocol_aggregates(output, all_rows):
     methods = sorted(set(row.get("retrieval_method", "unknown") for row in all_rows))
-    coverage_rows, geometry_rows, calibration_rows = [], [], []
+    coverage_rows, geometry_rows, calibration_rows, condition_rows = [], [], [], []
+    calibration_condition_rows, condition_curve_rows = [], []
     reject_counts = {}
     for method in methods:
         rows = [row for row in all_rows if row.get("retrieval_method", "unknown") == method]
@@ -273,10 +276,49 @@ def write_protocol_aggregates(output, all_rows):
         for row in rows:
             reason = row.get("reject_reason") or "none"
             reject_counts[(method, reason)] = reject_counts.get((method, reason), 0) + 1
+        for query_type in sorted({row.get("query_type", "unlabeled") for row in rows}):
+            condition = [row for row in rows if row.get("query_type", "unlabeled") == query_type]
+            condition_labeled = [row for row in condition if row.get("coverage_label_available")]
+            condition_rows.append({
+                "method": method, "query_type": query_type, "events": len(condition),
+                "retrieval_opportunities": sum(
+                    row.get("frame_role") == "retrieval_opportunity_frame" for row in condition),
+                "candidate_coverage": (sum(bool(row.get("candidate_covered")) for row in condition_labeled) /
+                                       len(condition_labeled) if condition_labeled else None),
+                "top1_accuracy": (sum(bool(row.get("top1_correct")) for row in condition_labeled) /
+                                  len(condition_labeled) if condition_labeled else None),
+                "geometry_success_rate": (sum(bool(row.get("geometry_verified")) for row in condition) /
+                                          len(condition) if condition else None),
+                "rejection_rate": (sum(bool(row.get("reject_reason")) for row in condition) /
+                                   len(condition) if condition else None),
+            })
+            calibrated = [row for row in condition if row.get("calibration_stage") == "confidence"]
+            top_pairs = [(row.get("top1_correct"), row.get("q_top1")) for row in calibrated
+                         if row.get("top1_correct") is not None and row.get("q_top1") is not None]
+            coverage_pairs = [(row.get("candidate_covered"), row.get("q_cov")) for row in calibrated
+                              if row.get("candidate_covered") is not None and row.get("q_cov") is not None]
+            calibration_condition_rows.append({
+                "method": method, "query_type": query_type,
+                "status": "available" if top_pairs and coverage_pairs else "unavailable",
+                "top1_samples": len(top_pairs),
+                "top1_ece": ece(*zip(*top_pairs)) if top_pairs else None,
+                "top1_brier": brier_score(*zip(*top_pairs)) if top_pairs else None,
+                "top1_nll": nll(*zip(*top_pairs)) if top_pairs else None,
+                "coverage_samples": len(coverage_pairs),
+                "coverage_ece": ece(*zip(*coverage_pairs)) if coverage_pairs else None,
+                "coverage_brier": brier_score(*zip(*coverage_pairs)) if coverage_pairs else None,
+                "coverage_nll": nll(*zip(*coverage_pairs)) if coverage_pairs else None,
+            })
+            if top_pairs:
+                curve = risk_coverage_curve(*zip(*top_pairs))
+                condition_curve_rows.extend({"method": method, "query_type": query_type, **point}
+                                            for point in curve["points"])
     tables = {
         "candidate_coverage.csv": coverage_rows,
         "geometry_verification.csv": geometry_rows,
         "calibration_by_method.csv": calibration_rows,
+        "calibration_by_condition.csv": calibration_condition_rows,
+        "metrics_by_query_type.csv": condition_rows,
         "reject_reason_counts.csv": [
             {"method": method, "reject_reason": reason, "count": count}
             for (method, reason), count in sorted(reject_counts.items())],
@@ -289,6 +331,10 @@ def write_protocol_aggregates(output, all_rows):
             writer.writerows(rows)
     # The empty curve is intentional until independent labels exist.
     (output / "risk_coverage.csv").write_text("method,coverage,risk,count\n", encoding="utf-8")
+    with (output / "risk_coverage_by_condition.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["method", "query_type", "coverage", "risk", "count"])
+        writer.writeheader()
+        writer.writerows(condition_curve_rows)
 
 
 def main():
@@ -322,11 +368,6 @@ def main():
                else "unavailable: missing independent mapping/query labels",
                "plots_generated": optional_plots(output, records)}
     write_protocol_aggregates(output, all_rows)
-    with (output / "calibration_by_condition.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["condition", "status", "reason"])
-        writer.writeheader()
-        writer.writerow({"condition": "normal", "status": "unavailable",
-                         "reason": "missing independent mapping/query labels"})
     scaling = [row for row in records if row.get("route_m") is not None]
     with (output / "scaling_summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)

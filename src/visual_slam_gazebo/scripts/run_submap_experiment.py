@@ -123,6 +123,7 @@ class ExperimentRecorder(Node):
         self.waypoint_plan = None
         self.latest_truth_pose = None
         self.submap_regions = self.load_submap_regions(submap_truth)
+        self.route_labels = self.load_route_labels(waypoint_route)
         self.expected_mode = None
         self.statuses = []
         self.truth_positions = []
@@ -158,6 +159,26 @@ class ExperimentRecorder(Node):
         if not regions:
             raise ValueError(f"no submap regions in {path}")
         return regions
+
+    @staticmethod
+    def load_route_labels(path):
+        if not path:
+            return []
+        with Path(path).open(newline="", encoding="utf-8") as handle:
+            return [{**row, "x": float(row["x"]), "y": float(row["y"]),
+                     "waypoint": int(row["waypoint"])} for row in csv.DictReader(handle)]
+
+    def query_annotation_at_truth(self):
+        if not self.route_labels or self.latest_truth_pose is None:
+            return {}
+        x, y, _ = self.latest_truth_pose
+        nearest = min(self.route_labels,
+                      key=lambda row: math.hypot(x - row["x"], y - row["y"]))
+        return {"query_route": nearest.get("route"),
+                "query_waypoint": nearest.get("waypoint"),
+                "query_type": nearest.get("query_type"),
+                "frame_role": nearest.get("frame_role"),
+                "query_waypoint_distance_m": math.hypot(x - nearest["x"], y - nearest["y"])}
 
     @staticmethod
     def point_in_polygon(x, y, polygon):
@@ -215,6 +236,8 @@ class ExperimentRecorder(Node):
             "pose_reliability", "topology_reliability", "q_top1", "q_cov",
             "candidate_covered", "top1_correct", "coverage_label_available",
             "candidate_coverage_reason", "none_of_the_above",
+            "query_route", "query_waypoint", "query_type", "frame_role",
+            "query_waypoint_distance_m",
         ]
         with (self.output_dir / "frame_diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
@@ -224,6 +247,8 @@ class ExperimentRecorder(Node):
                         "candidate_ids", "legal_submaps", "candidate_covered",
                         "top1_correct", "coverage_label_available",
                         "candidate_coverage_reason", "none_of_the_above", "q_top1", "q_cov"]
+        label_fields.extend(["query_route", "query_waypoint", "query_type", "frame_role",
+                             "query_waypoint_distance_m"])
         with (self.output_dir / "candidate_labels.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=label_fields, extrasaction="ignore")
             writer.writeheader()
@@ -269,6 +294,7 @@ class ExperimentRecorder(Node):
         if self.expected_mode is not None and data.get("submap_mode") != self.expected_mode:
             return
         legal = self.legal_submaps_at_truth()
+        data.update(self.query_annotation_at_truth())
         candidates = data.get("candidate_ids") or []
         data["evaluation_eligible"] = data.get("state") == "tracking" and bool(candidates)
         if legal is None:

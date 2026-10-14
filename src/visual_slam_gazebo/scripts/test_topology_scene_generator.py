@@ -8,6 +8,7 @@ import unittest
 from topology_scene_generator import TopologyScene, load_config
 from waypoint_route_controller import WaypointPlan
 from experiment_manager import resolve_scene_input
+from validate_mapping_query_separation import audit
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -57,6 +58,9 @@ class TopologySceneTest(unittest.TestCase):
         topology = self.build(mode="topology_change")
         self.assertTrue(any(not data["open"] for _, _, data in topology.graph.edges(data=True)))
         self.assertTrue(all(item["class"] == "topology_change" for item in topology.obstacles))
+        self.assertEqual(topology.validation()["status"], "passed")
+        self.assertTrue({"query_same_view_inner", "query_same_view_outer",
+                         "query_reverse_inner", "query_reverse_outer"}.issubset(topology.routes))
 
     def test_query_labels_include_overlap_and_none(self):
         scene = self.build()
@@ -68,6 +72,39 @@ class TopologySceneTest(unittest.TestCase):
                    for name, rows in scene.routes.items()
                    if name not in {"mapping_route", "query_none_of_the_above"} for row in rows}
         self.assertFalse(mapping.intersection(queries))
+
+    def test_heterogeneous_submaps_have_semantic_ids_and_bounded_membership(self):
+        scene = self.build()
+        kinds = {item["kind"] for item in scene.submaps}
+        self.assertEqual(kinds, {"corridor", "hall", "junction"})
+        self.assertTrue(any(item["id"].startswith("hall_r") for item in scene.submaps))
+        self.assertTrue(any(item["id"].startswith("junction_") for item in scene.submaps))
+        self.assertTrue(any(item["id"].startswith(("corridor_", "radial_"))
+                            for item in scene.submaps))
+        self.assertEqual([item["numeric_id"] for item in scene.submaps],
+                         list(range(len(scene.submaps))))
+        self.assertTrue(all("map_version" in item for item in scene.submaps))
+        self.assertTrue(scene.validation()["checks"]["legal_submap_multiplicity_controlled"])
+
+    def test_query_protocol_uses_typed_roles(self):
+        scene = self.build()
+        expected = {
+            "query_same_view_inner", "query_same_view_outer",
+            "query_reverse_inner", "query_reverse_outer",
+            "query_cross_inner_outer", "query_cross_hall",
+            "query_cold_start", "query_none_of_the_above",
+        }
+        self.assertTrue(expected.issubset(scene.routes))
+        same_view = scene.routes["query_same_view_inner"]
+        report = audit(scene.routes["mapping_route"], same_view, 10.0)
+        self.assertEqual(report["status"], "passed")
+        for name in expected:
+            report = audit(scene.routes["mapping_route"], scene.routes[name], 10.0)
+            self.assertEqual(report["status"], "passed", name)
+            if "reverse" in name or "cross" in name:
+                self.assertGreater(report["retrieval_opportunity_frames"], 0, name)
+        self.assertTrue(all(row["frame_role"] == "ood_frame"
+                            for row in scene.routes["query_none_of_the_above"]))
 
     def test_waypoint_controller_turns_and_completes(self):
         plan = WaypointPlan([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], 0.2)

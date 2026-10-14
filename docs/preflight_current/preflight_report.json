@@ -25,6 +25,18 @@
         "status": "passed",
         "detail": "visual node source must not subscribe to simulation truth",
         "critical": true
+      },
+      {
+        "name": "heterogeneous submap schema",
+        "status": "passed",
+        "detail": "corridor/hall/junction schema is implemented",
+        "critical": true
+      },
+      {
+        "name": "dedicated coverage calibration",
+        "status": "passed",
+        "detail": "q_cov must use the frozen 12-feature model instead of q_top1 remapping",
+        "critical": true
       }
     ],
     "B_pilot_runtime": [
@@ -41,7 +53,13 @@
         "critical": true
       },
       {
-        "name": "five query protocols",
+        "name": "scene schema v2",
+        "status": "failed",
+        "detail": "observed schema versions: []",
+        "critical": true
+      },
+      {
+        "name": "eight preregistered query routes",
         "status": "failed",
         "detail": "observed routes: ['query_normal_01']",
         "critical": true
@@ -59,9 +77,15 @@
         "critical": true
       },
       {
-        "name": "mapping/query separation",
+        "name": "independent captures >=5 s",
         "status": "failed",
-        "detail": "status=failed",
+        "detail": "capture checks: [{'route': 'query_normal_01', 'separation_s': None, 'passed': False}, {'route': 'query_normal_01', 'separation_s': None, 'passed': False}, {'route': 'query_normal_01', 'separation_s': None, 'passed': False}]",
+        "critical": true
+      },
+      {
+        "name": "mapping/query separation",
+        "status": "passed",
+        "detail": "status=passed",
         "critical": true
       },
       {
@@ -95,6 +119,12 @@
         "status": "failed",
         "detail": "both probabilities are required on every evaluable frame",
         "critical": true
+      },
+      {
+        "name": "coverage features available",
+        "status": "failed",
+        "detail": "candidate-coverage-v1 requires 12 ordered features on every evaluable frame",
+        "critical": true
       }
     ],
     "D_formal_test_freeze": [
@@ -106,20 +136,6 @@
       }
     ]
   },
-  "separation_blocker": {
-    "type": "protocol_route_separation_not_satisfied",
-    "thresholds_are_conjunctive": true,
-    "required": {
-      "time_s": 5.0,
-      "space_m": 2.0,
-      "view_deg": 30.0
-    },
-    "action": "redesign_mapping_query_routes_or_formally_revise_protocol_before_calibration_test",
-    "forbidden": [
-      "silently_relax_thresholds",
-      "delete_failed_frames",
-      "treat_route_overlap_as_pass"
-    ]
-  },
-  "note": "mapping/query 5 s, 2 m and 30 degree separation is a conjunctive preregistered gate; failure blocks formal calibration/test"
+  "separation_blocker": null,
+  "note": "mapping/query leakage prevention is global; spatial and view checks are query-type-specific and never delete frames"
 }
