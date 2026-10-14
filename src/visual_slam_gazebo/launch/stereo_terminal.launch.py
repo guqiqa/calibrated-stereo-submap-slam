@@ -16,13 +16,14 @@ def generate_launch_description():
     gazebo_share = get_package_share_directory("gazebo_ros")
     gazebo_prefix = get_package_prefix("gazebo_ros")
 
-    world = os.path.join(package_share, "worlds", "terminal_basic.world")
+    default_world = os.path.join(package_share, "worlds", "terminal_basic.world")
     robot_urdf = os.path.join(package_share, "urdf", "stereo_robot.urdf")
     gazebo_plugin_path = os.path.join(gazebo_prefix, "lib")
     gazebo_model_path = os.path.join(gazebo_prefix, "share", "gazebo-11", "models")
     custom_model_path = os.path.join(package_share, "models")
 
     gui = LaunchConfiguration("gui")
+    world = LaunchConfiguration("world")
     use_sim_time = LaunchConfiguration("use_sim_time")
 
     return LaunchDescription([
@@ -38,6 +39,11 @@ def generate_launch_description():
             "gui",
             default_value="true",
             description="Start the Gazebo client GUI",
+        ),
+        DeclareLaunchArgument(
+            "world",
+            default_value=default_world,
+            description="Gazebo world file; defaults to the legacy corridor scene",
         ),
         DeclareLaunchArgument(
             "use_sim_time",

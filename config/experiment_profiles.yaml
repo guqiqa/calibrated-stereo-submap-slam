@@ -24,6 +24,19 @@
     "gui": true,
     "analysis": "basic"
   },
+  "topology_scene_smoke": {
+    "scene": "generated_topology_scene",
+    "route_m": 10,
+    "speed_mps": 0.2,
+    "duration_s": 240,
+    "methods": ["c1", "c4", "p"],
+    "runs": 1,
+    "query_mode": "generated_waypoints",
+    "scene_manifest_required": true,
+    "record_bag": true,
+    "gui": true,
+    "analysis": "basic"
+  },
   "highload_scale": {
     "scene": "corridor_154m",
     "routes_m": [45, 60, 90, 120],
@@ -61,6 +74,6 @@
     "gui": true,
     "analysis": "calibration",
     "implemented": false,
-    "blocked_reason": "The three-topology, 30-layout scene generator is not implemented yet."
+    "blocked_reason": "Use generated dataset manifests with topology_scene_smoke until campaign-level layout iteration is enabled."
   }
 }

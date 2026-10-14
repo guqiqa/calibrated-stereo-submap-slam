@@ -8,6 +8,7 @@ Gazebo startup and service readiness checks.
 import argparse
 import csv
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -18,12 +19,16 @@ import threading
 import time
 
 import rclpy
+from gazebo_msgs.msg import EntityState
+from gazebo_msgs.srv import SetEntityState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
 from std_msgs.msg import String
 from std_srvs.srv import Empty
+
+from waypoint_route_controller import WaypointPlan, load_waypoints, yaw_from_quaternion
 
 
 KEY_PARAMETERS = {
@@ -93,13 +98,16 @@ def stamp_seconds(stamp):
 
 
 class ExperimentRecorder(Node):
-    def __init__(self, output_dir, speed, angular):
+    def __init__(self, output_dir, speed, angular, waypoint_route=None):
         super().__init__("submap_experiment_recorder")
         self.output_dir = Path(output_dir)
         self.speed = speed
         self.angular = angular
         self.direction = 1.0
         self.active = False
+        self.waypoint_route = waypoint_route
+        self.waypoint_plan = None
+        self.latest_truth_pose = None
         self.expected_mode = None
         self.statuses = []
         self.truth_positions = []
@@ -115,6 +123,7 @@ class ExperimentRecorder(Node):
         self.create_timer(0.05, self.publish_command)
         self.reset_client = self.create_client(Empty, "/reset_world")
         self.unpause_client = self.create_client(Empty, "/unpause_physics")
+        self.set_entity_client = self.create_client(SetEntityState, "/set_entity_state")
 
     def open_files(self):
         self.truth_positions.clear()
@@ -157,8 +166,11 @@ class ExperimentRecorder(Node):
     def publish_command(self):
         message = Twist()
         if self.active:
-            message.linear.x = self.speed * self.direction
-            message.angular.z = self.angular * self.direction
+            if self.waypoint_plan is not None and self.latest_truth_pose is not None:
+                message.linear.x, message.angular.z = self.waypoint_plan.command(*self.latest_truth_pose)
+            else:
+                message.linear.x = self.speed * self.direction
+                message.angular.z = self.angular * self.direction
         self.cmd_publisher.publish(message)
 
     def send_stop(self):
@@ -212,6 +224,10 @@ class ExperimentRecorder(Node):
             message.pose.pose.position.x,
             message.pose.pose.position.y,
         ))
+        self.latest_truth_pose = (
+            message.pose.pose.position.x, message.pose.pose.position.y,
+            yaw_from_quaternion(message.pose.pose.orientation),
+        )
         if self.truth_file is not None:
             self.write_odom(self.truth_writer, message, received_at)
 
@@ -233,6 +249,23 @@ class ExperimentRecorder(Node):
         rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
         if not future.done() or future.exception() is not None:
             raise RuntimeError("Gazebo unpause failed")
+        if self.waypoint_plan is not None:
+            if not self.set_entity_client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError("/set_entity_state is unavailable for waypoint initialization")
+            x, y, yaw = self.waypoint_plan.waypoints[0]
+            request = SetEntityState.Request()
+            request.state = EntityState()
+            request.state.name = "stereo_robot"
+            request.state.reference_frame = "world"
+            request.state.pose.position.x = x
+            request.state.pose.position.y = y
+            request.state.pose.orientation.z = math.sin(yaw / 2.0)
+            request.state.pose.orientation.w = math.cos(yaw / 2.0)
+            future = self.set_entity_client.call_async(request)
+            rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+            if (not future.done() or future.exception() is not None or
+                    not future.result().success):
+                raise RuntimeError("failed to initialize robot at the first waypoint")
         self.send_stop()
 
 
@@ -259,11 +292,22 @@ def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
         return True
 
 
-def start_vo(mode, log_path, map_export_path=None):
+def start_vo(mode, log_path, map_export_path=None, initial_pose=None):
     log_handle = log_path.open("w", encoding="utf-8")
     launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py", f"submap_mode:={mode}"]
     if map_export_path is not None:
         launch_args.append(f"map_export_path:={map_export_path}")
+    if initial_pose is not None:
+        base_x, base_y, yaw = initial_pose
+        camera_x = base_x + math.cos(yaw) * 0.08 - math.sin(yaw) * 0.035
+        camera_y = base_y + math.sin(yaw) * 0.08 + math.cos(yaw) * 0.035
+        launch_args.extend([
+            f"initial_gazebo_x:={camera_x}",
+            f"initial_gazebo_y:={camera_y}",
+            "initial_gazebo_z:=0.32",
+            f"initial_gazebo_yaw:={yaw}",
+            "straight_motion_constraint:=false",
+        ])
     process = subprocess.Popen(
         launch_args,
         stdout=log_handle,
@@ -433,6 +477,8 @@ def run_one(node, mode, run, args, root):
     node.statuses.clear()
     node.expected_mode = mode
     node.direction = 1.0
+    node.waypoint_plan = (WaypointPlan(load_waypoints(args.waypoint_route), args.speed)
+                          if args.waypoint_route else None)
     node.output_dir = output_dir
     node.open_files()
     node.reset_simulation()
@@ -440,16 +486,23 @@ def run_one(node, mode, run, args, root):
     if node.truth_positions:
         start_x = node.truth_positions[-1][1]
         start_y = node.truth_positions[-1][2]
-        if abs(start_x) > 0.5 or abs(start_y) > 0.5:
+        expected_x, expected_y = ((node.waypoint_plan.waypoints[0][0],
+                                   node.waypoint_plan.waypoints[0][1])
+                                  if node.waypoint_plan else (0.0, 0.0))
+        if math.hypot(start_x - expected_x, start_y - expected_y) > 0.5:
             raise RuntimeError(
-                f"world reset did not return robot to origin: x={start_x:.3f}, y={start_y:.3f}"
+                f"world reset did not initialize the expected route start: "
+                f"expected=({expected_x:.3f},{expected_y:.3f}), "
+                f"actual=({start_x:.3f},{start_y:.3f})"
             )
     # Discard any latched sample from before the reset. All run statistics
     # must describe motion after the confirmed origin check.
     node.truth_positions.clear()
     node.visual_positions.clear()
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
-    process, log_handle = start_vo(mode, output_dir / "stereo_vo_sim.log", map_export_path)
+    initial_pose = node.waypoint_plan.waypoints[0] if node.waypoint_plan else None
+    process, log_handle = start_vo(
+        mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose)
     resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
     resource_monitor.start()
     bag_process = None
@@ -462,7 +515,11 @@ def run_one(node, mode, run, args, root):
             bag_process, bag_log_handle, bag_staging_root, bag_staging_dir = start_rosbag(output_dir)
             spin_for(node, 1.0)
         node.active = True
-        if args.reverse_after is None:
+        if args.waypoint_route:
+            deadline = time.monotonic() + args.duration
+            while time.monotonic() < deadline and not node.waypoint_plan.completed:
+                spin_for(node, min(0.25, deadline - time.monotonic()))
+        elif args.reverse_after is None:
             spin_for(node, args.duration)
         else:
             if args.reverse_after <= 0.0 or args.reverse_after >= args.duration:
@@ -475,7 +532,7 @@ def run_one(node, mode, run, args, root):
         expected_distance = abs(args.speed) * args.duration
         run_summary = summarize(node, mode, run, args.duration, args.speed, args.angular)
         actual_distance = run_summary["truth_path_distance_m"]
-        if expected_distance > 0.0 and actual_distance < expected_distance * 0.5:
+        if not args.waypoint_route and expected_distance > 0.0 and actual_distance < expected_distance * 0.5:
             node.get_logger().warning(
                 f"truth motion is short: expected about {expected_distance:.2f} m, "
                 f"observed {actual_distance:.2f} m"
@@ -513,12 +570,18 @@ def run_one(node, mode, run, args, root):
                 "EXPERIMENT_CALIBRATION_VERSION",
                 node.statuses[-1].get("calibration_version", "unfitted-v0")
                 if node.statuses else "unfitted-v0"),
+            "scene_manifest": os.environ.get("EXPERIMENT_SCENE_MANIFEST"),
+            "scene_map_version": os.environ.get("EXPERIMENT_SCENE_MAP_VERSION"),
+            "waypoint_route": str(Path(args.waypoint_route).resolve()) if args.waypoint_route else None,
             "completed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         }
         (output_dir / "experiment_manifest.json").write_text(
             json.dumps(run_manifest, indent=2, ensure_ascii=True), encoding="utf-8"
         )
         summary = run_summary
+        summary["waypoint_route"] = str(args.waypoint_route) if args.waypoint_route else None
+        summary["waypoint_completed"] = node.waypoint_plan.completed if node.waypoint_plan else None
+        summary["waypoints_reached"] = node.waypoint_plan.index if node.waypoint_plan else None
         (output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
         )
@@ -565,6 +628,8 @@ def parse_args():
                         help="record stereo, truth, odometry and status topics for each run")
     parser.add_argument("--reverse-after", type=float, default=None,
                         help="reverse the commanded route after this many seconds")
+    parser.add_argument("--waypoint-route", default=None,
+                        help="Generated route CSV; /sim/odom is used only by the motion controller")
     return parser.parse_args()
 
 
@@ -575,7 +640,7 @@ def main():
     root = Path(args.output).resolve()
     root.mkdir(parents=True, exist_ok=True)
     rclpy.init()
-    node = ExperimentRecorder(root, args.speed, args.angular)
+    node = ExperimentRecorder(root, args.speed, args.angular, args.waypoint_route)
     try:
         for mode in args.modes:
             for run in range(1, args.runs + 1):

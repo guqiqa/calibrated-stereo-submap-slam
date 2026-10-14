@@ -100,6 +100,12 @@ def parse_args():
                         help="Record a rosbag for every mode/run")
     parser.add_argument("--shutdown-gazebo", action="store_true",
                         help="Close Gazebo when this campaign finishes")
+    parser.add_argument("--world", default=None,
+                        help="Use a generated Gazebo world instead of the default corridor")
+    parser.add_argument("--scene-manifest", default=None,
+                        help="Scene manifest; records scene identity and resolves scene.world")
+    parser.add_argument("--waypoint-route", default=None,
+                        help="Generated mapping/query route CSV")
     return parser.parse_args()
 
 
@@ -166,15 +172,18 @@ def require_single_gazebo(expected_pid=None):
     return pids[0]
 
 
-def start_gazebo(output, gui):
+def start_gazebo(output, gui, world=None):
     """Start Gazebo in a detached process group so the terminal stays usable."""
     log_path = output / "gazebo.log"
     log_handle = log_path.open("w", encoding="utf-8")
+    command = [
+        "ros2", "launch", "visual_slam_gazebo",
+        "stereo_terminal.launch.py", f"gui:={'true' if gui else 'false'}",
+    ]
+    if world:
+        command.append(f"world:={world}")
     process = subprocess.Popen(
-        [
-            "ros2", "launch", "visual_slam_gazebo",
-            "stereo_terminal.launch.py", f"gui:={'true' if gui else 'false'}",
-        ],
+        command,
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
@@ -248,6 +257,14 @@ def write_campaign_state(path, state, profile, args, output, gazebo_started,
 
 def main():
     args = parse_args()
+    scene_manifest = None
+    if args.scene_manifest:
+        manifest_path = Path(args.scene_manifest).resolve()
+        scene_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if args.world is None:
+            args.world = str(manifest_path.parent / "scene.world")
+        if not Path(args.world).exists():
+            raise SystemExit(f"generated scene world does not exist: {args.world}")
     if args.list_profiles:
         print(json.dumps(PROFILES, indent=2, ensure_ascii=True))
         return
@@ -286,6 +303,8 @@ def main():
         command.extend(["--reverse-after", str(reverse_after)])
     if args.record:
         command.append("--record-bag")
+    if args.waypoint_route:
+        command.extend(["--waypoint-route", str(Path(args.waypoint_route).resolve())])
     metadata = {
         "profile": args.profile,
         "route_m": profile["route_m"],
@@ -299,6 +318,15 @@ def main():
         "angular_radps": args.angular,
         "scene_model": "154 m maximum scene: 0-120 m evaluation route + approximately 30 m visual buffer",
     }
+    if scene_manifest:
+        metadata.update({
+            "scene_model": scene_manifest.get("scene_id"),
+            "scene_manifest": str(Path(args.scene_manifest).resolve()),
+            "scene_map_version": scene_manifest.get("map_version"),
+            "scene_world": str(Path(args.world).resolve()),
+        })
+    if args.waypoint_route:
+        metadata["waypoint_route"] = str(Path(args.waypoint_route).resolve())
     (output / "profile.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"
     )
@@ -320,6 +348,11 @@ def main():
         if len(existing_pids) > 1:
             raise RuntimeError(f"Multiple gzserver instances already running: {existing_pids}")
         if existing_pids:
+            if args.world:
+                raise RuntimeError(
+                    "A gzserver is already running while a generated world was requested. "
+                    "Stop it first so the manifest cannot be paired with the wrong world."
+                )
             # A server process can exist before DDS services become visible. Wait for
             # that process instead of racing it by launching another server.
             wait_for_gazebo(None)
@@ -334,7 +367,7 @@ def main():
             )
         else:
             gazebo_process, gazebo_log_handle, gazebo_log_path = start_gazebo(
-                output, not args.no_gui
+                output, not args.no_gui, args.world
             )
             gazebo_started = True
             write_campaign_state(

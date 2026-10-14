@@ -55,6 +55,10 @@ def parse_args():
     parser.add_argument("--analyze", action="store_true")
     parser.add_argument("--archive", action="store_true")
     parser.add_argument("--shutdown-gazebo", action="store_true")
+    parser.add_argument("--scene-manifest", default=None,
+                        help="Generated scene_manifest.json; resolves scene.world")
+    parser.add_argument("--waypoint-route", default=None,
+                        help="Generated route CSV; overrides the project route")
     return parser.parse_args()
 
 
@@ -84,6 +88,17 @@ def route_jobs(profile):
             raise ValueError(f"project has no duration for route {route}")
         jobs.append((route, float(duration)))
     return jobs
+
+
+def resolve_scene_input(path, root, scene_root=None):
+    """Resolve CLI paths from the repository first, then from the scene directory."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    repository_candidate = Path(root) / candidate
+    if repository_candidate.exists() or scene_root is None:
+        return repository_candidate.resolve()
+    return (Path(scene_root) / candidate).resolve()
 
 
 def sha256(path):
@@ -159,6 +174,19 @@ def main():
         record = False
 
     root = repository_root()
+    scene_manifest_path = Path(args.scene_manifest).resolve() if args.scene_manifest else None
+    scene_manifest = None
+    scene_world = None
+    if scene_manifest_path:
+        scene_manifest = json.loads(scene_manifest_path.read_text(encoding="utf-8"))
+        scene_world = scene_manifest_path.parent / "scene.world"
+        if not scene_world.exists():
+            raise SystemExit(f"scene manifest has no scene.world: {scene_world}")
+        expected = scene_manifest.get("files", {}).get("scene.world", {}).get("sha256")
+        if expected and sha256(scene_world) != expected:
+            raise SystemExit("scene.world does not match scene_manifest.json SHA-256")
+    elif profile.get("scene_manifest_required"):
+        raise SystemExit(f"project {args.project} requires --scene-manifest")
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output = Path(args.output_root).resolve() if args.output_root else root / "experiments" / f"{args.project}_{timestamp}"
     output.mkdir(parents=True, exist_ok=True)
@@ -175,6 +203,11 @@ def main():
         "git_dirty": bool(git_value(root, "status", "--porcelain")),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
+    if scene_manifest:
+        manifest["scene_manifest"] = str(scene_manifest_path)
+        manifest["scene_id"] = scene_manifest.get("scene_id")
+        manifest["scene_map_version"] = scene_manifest.get("map_version")
+        manifest["scene_manifest_sha256"] = sha256(scene_manifest_path)
     write_json(output / "campaign_manifest.json", manifest)
     # JSON is valid YAML and preserves a dependency-free frozen configuration snapshot.
     write_json(output / "resolved_parameters.yaml", {"project": profile, "resolved": manifest})
@@ -191,6 +224,16 @@ def main():
                        "--modes", *methods, "--runs", str(runs), "--duration", str(duration),
                        "--output-root", str(route_output),
                        "--skip-analysis"]
+            if scene_world:
+                command.extend(["--world", str(scene_world), "--scene-manifest", str(scene_manifest_path)])
+            waypoint_route = args.waypoint_route or profile.get("waypoint_route")
+            if waypoint_route:
+                waypoint_path = resolve_scene_input(
+                    waypoint_route, root,
+                    scene_manifest_path.parent if scene_manifest_path else None)
+                if not waypoint_path.exists():
+                    raise SystemExit(f"waypoint route does not exist: {waypoint_path}")
+                command.extend(["--waypoint-route", str(waypoint_path)])
             if profile.get("command_speed_mps") is not None:
                 command.extend(["--speed", str(profile["command_speed_mps"])])
             command.append("--gui" if gui else "--no-gui")
@@ -207,6 +250,8 @@ def main():
                 "EXPERIMENT_ROUTE_M": str(route),
                 "EXPERIMENT_GIT_COMMIT": manifest["git_commit"] or "unknown",
                 "EXPERIMENT_CALIBRATION_VERSION": manifest["calibration_version"],
+                "EXPERIMENT_SCENE_MANIFEST": str(scene_manifest_path) if scene_manifest_path else "",
+                "EXPERIMENT_SCENE_MAP_VERSION": scene_manifest.get("map_version", "") if scene_manifest else "",
             })
             subprocess.run(command, cwd=root, env=environment, check=True)
             update_state(state_path, "collecting", project=args.project, route_m=route)

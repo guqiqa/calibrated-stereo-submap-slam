@@ -142,6 +142,8 @@ def run_quality(run_dir):
     required = ["status.jsonl", "visual_odom.csv", "sim_odom.csv", "summary.json",
                 "frame_diagnostics.csv", "resolved_parameters.yaml", "stereo_vo_sim.log"]
     rows, invalid = load_status(run_dir / "status.jsonl")
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
     files = {name: {"exists": (run_dir / name).exists(),
                     "nonempty": (run_dir / name).exists() and (run_dir / name).stat().st_size > 0}
              for name in required}
@@ -164,6 +166,9 @@ def run_quality(run_dir):
         report["run_state"] = "incomplete"
     if report["max_consecutive_tracking_failures"] >= 3:
         report["run_state"] = "incomplete"
+    if summary.get("waypoint_route") and summary.get("waypoint_completed") is not True:
+        report["run_state"] = "incomplete"
+        report["waypoint_completion"] = "incomplete"
     if (run_dir / "rosbag").exists() and rosbag["status"] != "complete":
         report["run_state"] = "incomplete"
     (run_dir / "data_quality_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

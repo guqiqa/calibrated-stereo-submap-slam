@@ -3,7 +3,7 @@
 本目录是从 `D:\AIview\ROS2-clearRob` 复制出的研究代码备份，当前版本包含：
 
 - `src/visual_slam`：双目视觉里程计、ORB、三角化、PnP/RANSAC、C0/C1/C4/P 子地图模式；
-- `src/visual_slam_gazebo`：154 m 纹理走廊、双目机器人、视差检查和自动实验器；
+- `src/visual_slam_gazebo`：154 m 纹理走廊、参数化大厅—双环地图、双目机器人和自动实验器；
 - `experiments`：已完成的 G/S/P 短测和路线验证数据；
 - `参数可视化图表.html`：固定参数、处理链路、实验分组和短测结果图表；
 - `民航视觉SLAM主线小论文实验流程-子地图修订版.md`：实验计划。
@@ -73,6 +73,25 @@ ros2 launch visual_slam stereo_vo_sim.launch.py
 ```
 
 输出话题为 `/visual_slam/odometry_sim` 和 `/visual_slam/status_sim`。节点不会发布 TF，也不会控制机器人。Gazebo 场景的图像话题包括 `/sim/left/image_raw`、`/sim/right/image_raw`、`/sim/left/camera_info` 和 `/sim/right/camera_info`。
+
+## 参数化拓扑场景
+
+生成大厅—双环—径向通道场景：
+
+```bash
+python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
+  --family perturbed_ring --seed 2103 \
+  --output generated_scenes/perturbed_ring_2103 --validate --preview
+```
+
+生成冻结的 30 布局数据集及 60 个障碍变体：
+
+```bash
+python3 src/visual_slam_gazebo/scripts/generate_topology_scene.py \
+  --generate-dataset --output generated_scenes/topology_dataset_v1
+```
+
+详细格式、实验接入和验证命令见 `docs/topology_scene_generator.md`。
 
 ## 自动实验
 

@@ -2,6 +2,7 @@
 /build/
 /install/
 /log/
+/generated_scenes/
 
 # Python and editor caches
 __pycache__/

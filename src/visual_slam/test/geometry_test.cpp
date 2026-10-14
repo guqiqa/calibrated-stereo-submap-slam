@@ -23,6 +23,13 @@ int main()
   assert(std::abs(right.y + 0.965F) < 1e-6F);
   assert(std::abs(down.z + 0.68F) < 1e-6F);
 
+  const cv::Mat rotated = visual_slam::make_gazebo_T_initial_optical(
+    -0.08, -0.035, 0.32, std::acos(-1.0));
+  const cv::Point3f rotated_forward = visual_slam::transform_point(
+    rotated, cv::Point3f(0.0F, 0.0F, 2.0F));
+  assert(std::abs(rotated_forward.x + 2.08F) < 1e-6F);
+  assert(std::abs(rotated_forward.y + 0.035F) < 1e-6F);
+
   cv::Mat drifting_pose = cv::Mat::eye(4, 4, CV_64F);
   drifting_pose.at<double>(0, 0) = 0.96;
   drifting_pose.at<double>(0, 1) = 0.08;

@@ -7,16 +7,18 @@
 namespace visual_slam
 {
 
-inline cv::Mat make_gazebo_T_initial_optical(double x, double y, double z)
+inline cv::Mat make_gazebo_T_initial_optical(double x, double y, double z, double yaw = 0.0)
 {
   cv::Mat transform = cv::Mat::eye(4, 4, CV_64F);
   // Gazebo uses x-forward/y-left/z-up; ROS optical uses z-forward/x-right/y-down.
-  transform.at<double>(0, 0) = 0.0;
+  const double cosine = std::cos(yaw);
+  const double sine = std::sin(yaw);
+  transform.at<double>(0, 0) = sine;
   transform.at<double>(0, 1) = 0.0;
-  transform.at<double>(0, 2) = 1.0;
-  transform.at<double>(1, 0) = -1.0;
+  transform.at<double>(0, 2) = cosine;
+  transform.at<double>(1, 0) = -cosine;
   transform.at<double>(1, 1) = 0.0;
-  transform.at<double>(1, 2) = 0.0;
+  transform.at<double>(1, 2) = sine;
   transform.at<double>(2, 0) = 0.0;
   transform.at<double>(2, 1) = -1.0;
   transform.at<double>(2, 2) = 0.0;

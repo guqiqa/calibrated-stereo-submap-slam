@@ -1,0 +1,42 @@
+version: 1
+geometry:
+  hall_size_m: 20.0
+  hall_sizes_m: [14.0, 20.0, 28.0]
+  inner_half_extent_m: 17.0
+  outer_half_extent_m: 29.0
+  inner_width_m: 4.5
+  outer_width_m: 5.5
+  radial_count: 4
+  radial_counts: [4, 6, 8]
+  radial_width_m: 5.0
+  radial_widths_m: [4.0, 5.0, 6.0]
+  wall_height_m: 3.0
+  wall_thickness_m: 0.2
+  robot_radius_m: 0.29
+  clearance_margin_m: 0.25
+submaps:
+  length_m: 5.0
+  overlap_m: 1.5
+  overlap_ratios: [0.2, 0.3, 0.4]
+visual:
+  texture_repeat_ratio: 0.65
+  stable_feature_spacing_m: 12.0
+  repeated_group_period: 4
+obstacles:
+  visual_only_count: 8
+  topology_closed_edges: 1
+routes:
+  waypoint_spacing_m: 0.5
+  query_count: 3
+  lateral_offset_m: 0.35
+dataset:
+  families: [regular_baseline, perturbed_ring, asymmetric_extension]
+  per_family: 10
+  split_counts:
+    development: 4
+    calibration: 3
+    test: 3
+  seed_bases:
+    regular_baseline: 1000
+    perturbed_ring: 2000
+    asymmetric_extension: 3000

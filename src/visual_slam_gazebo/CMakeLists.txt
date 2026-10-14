@@ -12,7 +12,7 @@ install(
 )
 
 install(
-  FILES ../../config/experiment_profiles.yaml
+  FILES ../../config/experiment_profiles.yaml ../../config/topology_scene_defaults.yaml
   DESTINATION share/${PROJECT_NAME}/config
 )
 
@@ -24,6 +24,9 @@ install(
            scripts/calibration_metrics.py scripts/evaluate_retrieval_protocol.py
            scripts/test_retrieval_protocol.py scripts/run_protocol_fixture.py
            scripts/experiment_manager.py scripts/analyze_experiment.py
+           scripts/generate_topology_scene.py scripts/topology_scene_generator.py
+           scripts/waypoint_route_controller.py scripts/test_topology_scene_generator.py
+           scripts/run_topology_dataset_campaign.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

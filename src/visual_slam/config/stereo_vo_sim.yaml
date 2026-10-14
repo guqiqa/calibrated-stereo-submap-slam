@@ -37,6 +37,7 @@ stereo_vo_sim:
     initial_gazebo_x: 0.08
     initial_gazebo_y: 0.035
     initial_gazebo_z: 0.32
+    initial_gazebo_yaw: 0.0
     fallback_baseline_m: 0.07
     odom_frame: visual_odom_sim
     camera_frame: stereo_left_optical_frame

@@ -128,6 +128,7 @@ public:
     initial_gazebo_x_ = declare_parameter<double>("initial_gazebo_x", 0.08);
     initial_gazebo_y_ = declare_parameter<double>("initial_gazebo_y", 0.035);
     initial_gazebo_z_ = declare_parameter<double>("initial_gazebo_z", 0.32);
+    initial_gazebo_yaw_ = declare_parameter<double>("initial_gazebo_yaw", 0.0);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "visual_odom_sim");
     camera_frame_ = declare_parameter<std::string>("camera_frame", "stereo_left_optical_frame");
     submap_mode_ = declare_parameter<std::string>("submap_mode", "joint");
@@ -150,7 +151,7 @@ public:
     map_fusion_radius_m_ = declare_parameter<double>("map_fusion_radius_m", 0.10);
     map_export_path_ = declare_parameter<std::string>("map_export_path", "");
     gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
-      initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_);
+      initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_, initial_gazebo_yaw_);
 
     if (processing_scale_ < 0.25 || processing_scale_ > 1.0) {
       throw std::runtime_error("processing_scale must be within [0.25, 1.0]");
@@ -1785,6 +1786,7 @@ private:
   double initial_gazebo_x_{};
   double initial_gazebo_y_{};
   double initial_gazebo_z_{};
+  double initial_gazebo_yaw_{};
   double fallback_baseline_m_{0.07};
   std::string submap_mode_;
   double submap_length_m_{};
