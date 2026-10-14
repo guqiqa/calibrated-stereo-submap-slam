@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Audit preregistered mapping/query waypoint separation without altering routes."""
+"""Audit conjunctive mapping/query separation without altering routes.
+
+This checker deliberately does not repair routes or discard failed frames. A
+failed report is a protocol blocker until the route is redesigned or the
+preregistered protocol is formally revised.
+"""
 
 import argparse
 import csv

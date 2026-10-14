@@ -141,9 +141,23 @@ def main():
              "D_formal_test_freeze": [check("full test dataset frozen", dataset_ok, dataset_detail)]}
     gate_status = {name: all(item["status"] == "passed" for item in items if item["critical"])
                    for name, items in gates.items()}
+    separation_blocker = None
+    if not separation_passed:
+        separation_blocker = {
+            "type": "protocol_route_separation_not_satisfied",
+            "thresholds_are_conjunctive": True,
+            "required": {"time_s": 5.0, "space_m": 2.0, "view_deg": 30.0},
+            "action": "redesign_mapping_query_routes_or_formally_revise_protocol_before_calibration_test",
+            "forbidden": [
+                "silently_relax_thresholds",
+                "delete_failed_frames",
+                "treat_route_overlap_as_pass",
+            ],
+        }
     report = {"formal_test_ready": all(gate_status.values()), "gate_status": gate_status,
               "gates": gates,
-              "note": "mapping/query 5 s, 2 m and 30 degree separation requires frame-level post-run validation"}
+              "separation_blocker": separation_blocker,
+              "note": "mapping/query 5 s, 2 m and 30 degree separation is a conjunctive preregistered gate; failure blocks formal calibration/test"}
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     (output / "preflight_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")

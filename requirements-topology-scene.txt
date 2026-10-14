@@ -1,8 +1,9 @@
 # Python dependencies used by the parameterized topology scene generator.
 # ROS 2 Humble and Gazebo Classic 11 remain system dependencies.
-Shapely==1.8.5.post1
+# Shapely 1.8 cannot build on the project's Python 3.13 environment.
+Shapely==2.1.2
 networkx==3.4.2
-PyYAML==5.4.1
+PyYAML==6.0.2
 Jinja2==3.0.3
 matplotlib==3.10.9
 Pillow==9.0.1

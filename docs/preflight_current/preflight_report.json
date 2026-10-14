@@ -106,5 +106,20 @@
       }
     ]
   },
-  "note": "mapping/query 5 s, 2 m and 30 degree separation requires frame-level post-run validation"
+  "separation_blocker": {
+    "type": "protocol_route_separation_not_satisfied",
+    "thresholds_are_conjunctive": true,
+    "required": {
+      "time_s": 5.0,
+      "space_m": 2.0,
+      "view_deg": 30.0
+    },
+    "action": "redesign_mapping_query_routes_or_formally_revise_protocol_before_calibration_test",
+    "forbidden": [
+      "silently_relax_thresholds",
+      "delete_failed_frames",
+      "treat_route_overlap_as_pass"
+    ]
+  },
+  "note": "mapping/query 5 s, 2 m and 30 degree separation is a conjunctive preregistered gate; failure blocks formal calibration/test"
 }

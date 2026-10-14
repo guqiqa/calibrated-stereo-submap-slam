@@ -7,10 +7,14 @@ import json
 import math
 from pathlib import Path
 
-import rclpy
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
-from rclpy.node import Node
+try:
+    import rclpy
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
+    from rclpy.node import Node
+except ImportError:  # Pure route-plan tests do not require ROS 2.
+    rclpy = None
+    Twist = Odometry = Node = None
 
 
 def normalize_angle(value):
@@ -62,28 +66,35 @@ class WaypointPlan:
         return linear, angular
 
 
-class WaypointController(Node):
-    def __init__(self, route, speed, report):
-        super().__init__("visual_slam_waypoint_controller")
-        self.plan = WaypointPlan(load_waypoints(route), speed)
-        self.report = Path(report) if report else None
-        self.publisher = self.create_publisher(Twist, "/sim/cmd_vel", 10)
-        self.create_subscription(Odometry, "/sim/odom", self.odom_callback, 20)
+if Node is not None:
+    class WaypointController(Node):
+        def __init__(self, route, speed, report):
+            super().__init__("visual_slam_waypoint_controller")
+            self.plan = WaypointPlan(load_waypoints(route), speed)
+            self.report = Path(report) if report else None
+            self.publisher = self.create_publisher(Twist, "/sim/cmd_vel", 10)
+            self.create_subscription(Odometry, "/sim/odom", self.odom_callback, 20)
 
-    def odom_callback(self, message):
-        pose = message.pose.pose
-        linear, angular = self.plan.command(
-            pose.position.x, pose.position.y, yaw_from_quaternion(pose.orientation))
-        command = Twist(); command.linear.x = linear; command.angular.z = angular
-        self.publisher.publish(command)
-        if self.plan.completed:
-            if self.report:
-                self.report.write_text(json.dumps({"state": "complete",
-                    "waypoints": len(self.plan.waypoints)}, indent=2), encoding="utf-8")
-            rclpy.shutdown()
+        def odom_callback(self, message):
+            pose = message.pose.pose
+            linear, angular = self.plan.command(
+                pose.position.x, pose.position.y, yaw_from_quaternion(pose.orientation))
+            command = Twist(); command.linear.x = linear; command.angular.z = angular
+            self.publisher.publish(command)
+            if self.plan.completed:
+                if self.report:
+                    self.report.write_text(json.dumps({"state": "complete",
+                        "waypoints": len(self.plan.waypoints)}, indent=2), encoding="utf-8")
+                rclpy.shutdown()
+else:
+    class WaypointController:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("ROS 2 is required to run the waypoint controller")
 
 
 def main():
+    if rclpy is None:
+        raise SystemExit("ROS 2 is required to run waypoint_route_controller.py")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("route")
     parser.add_argument("--speed", type=float, default=0.254522061)

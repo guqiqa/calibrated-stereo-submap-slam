@@ -29,4 +29,4 @@ Formal test ready: **False**
 
 - [ ] full test dataset frozen: no full dataset manifest supplied
 
-mapping/query 5 s, 2 m and 30 degree separation requires frame-level post-run validation
+mapping/query 5 s, 2 m and 30 degree separation is a conjunctive preregistered gate; failure blocks formal calibration/test
