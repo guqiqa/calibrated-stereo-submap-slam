@@ -26,10 +26,16 @@ submaps:
   max_overflow_fraction: 0.05
   overlap_ratios: [0.2, 0.3, 0.4]
 visual:
-  asset_version: dense-v1
+  asset_version: dense-junction-v4
   texture_repeat_ratio: 0.65
   stable_feature_spacing_m: 4.0
   repeated_group_period: 4
+  junction_entry_depth_m: 1.15
+  junction_entry_clearance_m: 0.45
+  junction_entry_panel_width_m: 0.70
+  junction_entry_panel_height_m: 1.70
+  radial_feature_spacing_m: 2.5
+  radial_feature_inset_m: 0.35
 obstacles:
   visual_only_count: 8
   topology_closed_edges: 1

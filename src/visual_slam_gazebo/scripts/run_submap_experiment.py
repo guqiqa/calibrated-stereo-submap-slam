@@ -133,6 +133,7 @@ class ExperimentRecorder(Node):
         self.status_file = None
         self.odom_file = None
         self.truth_file = None
+        self.control_file = None
         self.cmd_publisher = self.create_publisher(Twist, "/sim/cmd_vel", 10)
         qos = QoSProfile(depth=20)
         self.create_subscription(String, "/visual_slam/status_sim", self.status_callback, qos)
@@ -208,19 +209,26 @@ class ExperimentRecorder(Node):
         self.status_file = (self.output_dir / "status.jsonl").open("w", encoding="utf-8")
         self.odom_file = (self.output_dir / "visual_odom.csv").open("w", newline="", encoding="utf-8")
         self.truth_file = (self.output_dir / "sim_odom.csv").open("w", newline="", encoding="utf-8")
+        self.control_file = (self.output_dir / "control_diagnostics.csv").open(
+            "w", newline="", encoding="utf-8")
         self.odom_writer = csv.writer(self.odom_file)
         self.truth_writer = csv.writer(self.truth_file)
+        self.control_writer = csv.writer(self.control_file)
         header = ["host_time", "stamp", "x", "y", "z", "qx", "qy", "qz", "qw"]
         self.odom_writer.writerow(header)
         self.truth_writer.writerow(header)
+        self.control_writer.writerow([
+            "host_time", "x", "y", "yaw", "target_yaw", "yaw_error",
+            "waypoint", "phase", "linear_x", "angular_z"])
 
     def close_files(self):
-        for file_handle in (self.status_file, self.odom_file, self.truth_file):
+        for file_handle in (self.status_file, self.odom_file, self.truth_file, self.control_file):
             if file_handle is not None:
                 file_handle.close()
         self.status_file = None
         self.odom_file = None
         self.truth_file = None
+        self.control_file = None
 
     def write_diagnostics(self):
         if not self.statuses or self.output_dir is None:
@@ -229,6 +237,9 @@ class ExperimentRecorder(Node):
             "host_time", "state", "motion_source", "stereo_points", "valid_matches",
             "ransac_inliers", "pnp_inliers", "median_disparity_px", "depth_min_m",
             "depth_median_m", "stereo_reprojection_px", "motion_consistency",
+            "vo_recovery_state", "rotation_2d_inliers", "rotation_2d_deg",
+            "temporal_matches_2d", "temporal_flow_px", "rotation_2d_residual_px",
+            "map_updates_enabled", "validation_success_frames",
             "visual_distance_m", "processing_ms", "matching_ms", "active_map_points",
             "map_points_stable", "tracking_failures",
             "retrieval_method", "retrieval_decision", "selected_submap",
@@ -272,13 +283,26 @@ class ExperimentRecorder(Node):
 
     def publish_command(self):
         message = Twist()
+        phase = "idle"
+        waypoint = None
+        target_yaw = None
+        yaw_error = None
         if self.active:
             if self.waypoint_plan is not None and self.latest_truth_pose is not None:
                 message.linear.x, message.angular.z = self.waypoint_plan.command(*self.latest_truth_pose)
+                phase = self.waypoint_plan.phase
+                waypoint = self.waypoint_plan.index
+                target_yaw = self.waypoint_plan.last_target_yaw
+                yaw_error = self.waypoint_plan.last_yaw_error
             else:
                 message.linear.x = self.speed * self.direction
                 message.angular.z = self.angular * self.direction
         self.cmd_publisher.publish(message)
+        if self.control_file is not None and self.latest_truth_pose is not None:
+            x, y, yaw = self.latest_truth_pose
+            self.control_writer.writerow([
+                time.time(), x, y, yaw, target_yaw, yaw_error,
+                waypoint, phase, message.linear.x, message.angular.z])
 
     def send_stop(self):
         message = Twist()

@@ -110,6 +110,8 @@ def parse_args():
                         help="Generated mapping/query route CSV")
     parser.add_argument("--route-prefix-m", type=float, default=None,
                         help="Use only a mapping-route prefix of this arc length for smoke tests")
+    parser.add_argument("--route-waypoint-range", nargs=2, type=int, metavar=("START", "END"),
+                        help="Use an inclusive waypoint interval for a local smoke test")
     parser.add_argument("--calibration-model", default=None)
     parser.add_argument("--map-database", default=None)
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
@@ -294,6 +296,8 @@ def main():
         reverse_after = profile.get("reverse_after_s")
     output.mkdir(parents=True, exist_ok=True)
     waypoint_route = Path(args.waypoint_route).resolve() if args.waypoint_route else None
+    if args.route_prefix_m is not None and args.route_waypoint_range is not None:
+        raise SystemExit("--route-prefix-m and --route-waypoint-range are mutually exclusive")
     if args.route_prefix_m is not None:
         if waypoint_route is None or args.route_prefix_m <= 0.0:
             raise SystemExit("--route-prefix-m requires a positive --waypoint-route")
@@ -317,6 +321,23 @@ def main():
             writer = csv.DictWriter(handle, fieldnames=list(route_rows[0].keys()))
             writer.writeheader()
             writer.writerows(prefix_rows)
+    elif args.route_waypoint_range is not None:
+        if waypoint_route is None:
+            raise SystemExit("--route-waypoint-range requires --waypoint-route")
+        start, end = args.route_waypoint_range
+        if start < 0 or end < start:
+            raise SystemExit("invalid --route-waypoint-range")
+        with waypoint_route.open(newline="", encoding="utf-8") as handle:
+            route_rows = list(csv.DictReader(handle))
+        selected = [row for row in route_rows if start <= int(row["waypoint"]) <= end]
+        if not selected or int(selected[0]["waypoint"]) != start or int(selected[-1]["waypoint"]) != end:
+            raise SystemExit(f"waypoint range {start}..{end} is not present in {waypoint_route}")
+        waypoint_route = output / "smoke_routes" / f"waypoints_{start:03d}_{end:03d}.csv"
+        waypoint_route.parent.mkdir(parents=True, exist_ok=True)
+        with waypoint_route.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(route_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(selected)
     package_dir = Path(__file__).resolve().parent
     recorder = package_dir / "run_submap_experiment.py"
     command = [
@@ -372,6 +393,8 @@ def main():
         metadata["waypoint_route"] = str(waypoint_route)
         if args.route_prefix_m is not None:
             metadata["route_prefix_m"] = args.route_prefix_m
+        if args.route_waypoint_range is not None:
+            metadata["route_waypoint_range"] = args.route_waypoint_range
     (output / "profile.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=True), encoding="utf-8"
     )

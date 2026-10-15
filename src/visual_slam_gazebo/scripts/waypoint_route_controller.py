@@ -38,32 +38,100 @@ class WaypointPlan:
     """Pure control state shared by the standalone and experiment controllers."""
 
     def __init__(self, waypoints, speed, tolerance=0.35, angular_gain=1.8,
-                 max_angular=0.8):
+                 max_angular=0.22, turn_linear_speed=0.08,
+                 yaw_tolerance=math.radians(4.0), settle_cycles=8):
         self.waypoints = waypoints
         self.speed = abs(float(speed))
         self.tolerance = float(tolerance)
         self.angular_gain = float(angular_gain)
         self.max_angular = float(max_angular)
+        self.turn_linear_speed = abs(float(turn_linear_speed))
+        self.yaw_tolerance = float(yaw_tolerance)
+        self.settle_cycles = int(settle_cycles)
         self.index = 0
         self.completed = False
+        self.phase = "cruise"
+        self.settle_remaining = 0
+        self.last_target_yaw = 0.0
+        self.last_yaw_error = 0.0
+        self.last_linear = 0.0
+        self.last_angular = 0.0
+
+    def _command(self, linear, angular):
+        self.last_linear = float(linear)
+        self.last_angular = float(angular)
+        return self.last_linear, self.last_angular
 
     def command(self, x, y, yaw):
         while self.index < len(self.waypoints):
-            tx, ty, _ = self.waypoints[self.index]
-            if math.hypot(tx - x, ty - y) > self.tolerance:
+            tx, ty, target_yaw = self.waypoints[self.index]
+            distance = math.hypot(tx - x, ty - y)
+            if distance > self.tolerance or abs(normalize_angle(target_yaw - yaw)) > self.yaw_tolerance:
                 break
             self.index += 1
         if self.index >= len(self.waypoints):
             self.completed = True
-            return 0.0, 0.0
-        tx, ty, _ = self.waypoints[self.index]
+            self.phase = "complete"
+            return self._command(0.0, 0.0)
+        tx, ty, target_yaw = self.waypoints[self.index]
+        self.last_target_yaw = target_yaw
+        distance_to_target = math.hypot(tx - x, ty - y)
+        yaw_error = normalize_angle(target_yaw - yaw)
+        self.last_yaw_error = yaw_error
+
+        # A waypoint with a changed yaw is a real turn state, not merely the
+        # next positional target. Stop translation and rotate in place.
+        if distance_to_target <= self.tolerance and abs(yaw_error) > self.yaw_tolerance:
+            self.phase = "rotate"
+        if self.phase == "rotate":
+            if abs(yaw_error) <= self.yaw_tolerance:
+                self.phase = "settle"
+                self.settle_remaining = self.settle_cycles
+            else:
+                angular = max(-self.max_angular, min(self.max_angular,
+                              self.angular_gain * yaw_error))
+                return self._command(0.0, angular)
+        if self.phase == "settle":
+            if abs(yaw_error) > self.yaw_tolerance:
+                self.phase = "rotate"
+                return self._command(0.0, 0.0)
+            self.settle_remaining -= 1
+            if self.settle_remaining > 0:
+                return self._command(0.0, 0.0)
+            self.phase = "cruise"
+            self.index += 1
+            return self._command(0.0, 0.0)
+        if distance_to_target <= self.tolerance:
+            self.index += 1
+            return self._command(0.0, 0.0)
+
         heading_error = normalize_angle(math.atan2(ty - y, tx - x) - yaw)
         angular = max(-self.max_angular, min(self.max_angular,
                       self.angular_gain * heading_error))
+        error_abs = abs(heading_error)
         linear = self.speed * max(0.0, math.cos(heading_error))
-        if abs(heading_error) > 0.65:
+        # Anticipate sharp turns from the route geometry. The old controller
+        # only slowed after the heading error appeared, which is too late for
+        # a stereo tracker approaching a 180-degree turnaround.
+        if self.index + 2 < len(self.waypoints):
+            nx, ny, _ = self.waypoints[self.index + 1]
+            fx, fy, _ = self.waypoints[self.index + 2]
+            incoming = math.atan2(ny - ty, nx - tx)
+            outgoing = math.atan2(fy - nx, fx - ny)
+            turn_angle = abs(normalize_angle(outgoing - incoming))
+            distance_to_corner = math.hypot(tx - x, ty - y)
+            if turn_angle > 0.75 and distance_to_corner < 2.5:
+                proximity = max(0.0, min(1.0, (2.5 - distance_to_corner) / 2.5))
+                linear *= 1.0 - 0.65 * proximity
+        # Gradually slow before a junction turn; avoid an abrupt stop-and-spin
+        # that changes the view faster than the stereo tracker can follow.
+        if error_abs > 0.30:
+            linear *= max(0.20, 1.0 - (error_abs - 0.30) / 0.70)
+        if error_abs > 0.95:
             linear = 0.0
-        return linear, angular
+        if error_abs > 0.52:
+            linear = min(linear, self.turn_linear_speed)
+        return self._command(linear, angular)
 
 
 if Node is not None:

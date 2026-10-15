@@ -101,6 +101,8 @@ def parse_args():
                         help="Generated route CSV; overrides the project route")
     parser.add_argument("--route-prefix-m", type=float, default=None,
                         help="Pass a mapping-route prefix to the legacy runner for smoke tests")
+    parser.add_argument("--route-waypoint-range", nargs=2, type=int, metavar=("START", "END"),
+                        help="Pass an inclusive local waypoint interval to the runner")
     parser.add_argument("--calibration-model", default=None,
                         help="Frozen calibration_model.json used by method P")
     parser.add_argument("--preflight", action="store_true",
@@ -313,6 +315,10 @@ def main():
                 command.extend(["--waypoint-route", str(waypoint_path)])
                 if args.route_prefix_m is not None:
                     command.extend(["--route-prefix-m", str(args.route_prefix_m)])
+                if args.route_waypoint_range is not None:
+                    command.extend(["--route-waypoint-range",
+                                    str(args.route_waypoint_range[0]),
+                                    str(args.route_waypoint_range[1])])
             if calibration_model:
                 command.extend(["--calibration-model", str(calibration_model)])
             if map_database:

@@ -282,16 +282,88 @@ class TopologyScene:
             kind = "repeated_panel" if self.random.random() < self.parameters["visual"]["texture_repeat_ratio"] else "unique_panel"
             self.feature_points.append({"id": f"feature_{index:04d}", "x": point[0], "y": point[1],
                                         "kind": kind, "visual_group": f"repeat_{index % 4}" if kind.startswith("repeated") else f"unique_{index}"})
-        # Junction pillars make submap overlap areas observable even when the
-        # overlap lies in the middle of a wide crossing, away from wall panels.
+        # Radial connectors cross large open regions where the free-space
+        # boundary can be far outside the stereo depth range. Thin side
+        # panels keep nearby structure visible without changing topology.
+        radial_spacing = float(self.parameters["visual"].get("radial_feature_spacing_m", 2.5))
+        radial_inset = float(self.parameters["visual"].get("radial_feature_inset_m", 0.35))
+        for u, v, edge in sorted(self.graph.edges(data=True)):
+            if not edge["open"] or not str(edge["region"]).startswith("radial_"):
+                continue
+            line = self.edge_lines[tuple(sorted((u, v)))]
+            if line.length <= 2.0 * radial_spacing:
+                continue
+            start, end = line.coords[0], line.coords[-1]
+            dx, dy = end[0] - start[0], end[1] - start[1]
+            norm = math.hypot(dx, dy)
+            ux, uy = dx / norm, dy / norm
+            nx, ny = -uy, ux
+            lateral = max(0.5, float(edge["width"]) * 0.5 - radial_inset)
+            sample_index = 0
+            distance = radial_spacing
+            while distance < line.length - radial_spacing:
+                point = line.interpolate(distance)
+                for side in (-1.0, 1.0):
+                    self.feature_points.append({
+                        "id": f"radial_panel_{u}_{v}_{sample_index}_{int(side):+d}",
+                        "x": point.x + nx * lateral * side,
+                        "y": point.y + ny * lateral * side,
+                        "kind": "corridor_side_panel",
+                        "visual_group": f"radial_{edge['region']}_{sample_index % 3}",
+                        "yaw": math.atan2(uy, ux), "width": 0.75, "height": 1.80,
+                    })
+                sample_index += 1
+                distance += radial_spacing
+        # Keep the junction center clear. A center pillar can fill the camera
+        # view during an in-place turn and leave a large, textureless image.
+        # Corner pillars provide nearby parallax without blocking an approach.
         offset = len(self.feature_points)
         for index, (node, data) in enumerate(sorted(self.graph.nodes(data=True))):
             if self.open_graph().degree(node) < 3:
                 continue
-            self.feature_points.append({
-                "id": f"feature_{offset + index:04d}", "x": data["x"], "y": data["y"],
-                "kind": "junction_pillar", "visual_group": f"junction_{node}",
-            })
+            incident_widths = [float(self.graph.edges[node, neighbor]["width"])
+                               for neighbor in self.open_graph().neighbors(node)]
+            corner_offset = max(1.0, min(incident_widths) * 0.5 - 0.60)
+            for corner, (sx, sy) in enumerate(((-1, -1), (-1, 1), (1, -1), (1, 1))):
+                px = data["x"] + sx * corner_offset
+                py = data["y"] + sy * corner_offset
+                if not self.free_space.buffer(-0.30).covers(Point(px, py)):
+                    continue
+                self.feature_points.append({
+                    "id": f"junction_corner_{node}_{corner}_{offset + index:04d}",
+                    "x": px, "y": py, "kind": "junction_corner_pillar",
+                    "visual_group": f"junction_{node}",
+                })
+            # Close directional pairs provide nearby parallax at each junction
+            # entrance without changing the traversable geometry.
+            depth = float(self.parameters["visual"].get("junction_entry_depth_m", 1.15))
+            clearance = float(self.parameters["visual"].get("junction_entry_clearance_m", 0.45))
+            panel_width = float(self.parameters["visual"].get("junction_entry_panel_width_m", 0.70))
+            panel_height = float(self.parameters["visual"].get("junction_entry_panel_height_m", 1.70))
+            for neighbor in sorted(self.open_graph().neighbors(node)):
+                neighbor_data = self.graph.nodes[neighbor]
+                dx = neighbor_data["x"] - data["x"]
+                dy = neighbor_data["y"] - data["y"]
+                norm = math.hypot(dx, dy)
+                if norm < 1e-6:
+                    continue
+                ux, uy = dx / norm, dy / norm
+                nx, ny = -uy, ux
+                edge_width = float(self.graph.edges[node, neighbor]["width"])
+                lateral = max(clearance, edge_width * 0.5 - clearance)
+                base_x = data["x"] + ux * depth
+                base_y = data["y"] + uy * depth
+                for side in (-1.0, 1.0):
+                    self.feature_points.append({
+                        "id": f"junction_entry_{node}_{neighbor}_{len(self.feature_points):04d}",
+                        "x": base_x + nx * lateral * side,
+                        "y": base_y + ny * lateral * side,
+                        "kind": "junction_entry_panel",
+                        "visual_group": f"junction_entry_{node}_{neighbor}",
+                        "yaw": math.atan2(uy, ux),
+                        "width": panel_width,
+                        "height": panel_height,
+                    })
 
     def _edge_midpoint_obstacle(self, u, v, index, topology_change=False):
         data = self.graph.edges[u, v]
@@ -1012,6 +1084,14 @@ class TopologyScene:
         colors = ["0.72 0.20 0.16 1", "0.10 0.48 0.62 1", "0.75 0.61 0.12 1", "0.20 0.58 0.30 1"]
         for index, feature in enumerate(self.feature_points):
             color = colors[index % len(colors)] if feature["kind"] == "repeated_panel" else colors[(index * 3 + 1) % len(colors)]
+            if feature["kind"] in {"junction_entry_panel", "corridor_side_panel"}:
+                color = colors[(index + 2) % len(colors)]
+                width = float(feature.get("width", 0.70))
+                height = float(feature.get("height", 1.70))
+                self._box_link(environment, feature["id"], feature["x"], feature["y"], height / 2,
+                               width, 0.18, height, float(feature.get("yaw", 0.0)),
+                               color=color, collision=False)
+                continue
             self._box_link(environment, feature["id"], feature["x"], feature["y"], 1.3,
                            0.28, 0.28, 2.4, color=color, collision=False)
         for obstacle in self.obstacles:

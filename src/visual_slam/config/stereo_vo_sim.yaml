@@ -15,14 +15,28 @@ stereo_vo_sim:
     stereo_reprojection_error_px: 1.5
     temporal_match_distance: 52
     min_stereo_points: 35
-    min_pnp_inliers: 18
+    min_tracking_stereo_points: 12
+    recovery_stereo_points: 12
+    max_consecutive_tracking_failures: 3
+    rotation_min_matches: 15
+    rotation_min_deg: 0.35
+    rotation_max_translation_m: 0.03
+    rotation_max_residual_px: 1.5
+    rotation_scale_factor: 1.06
+    rotation_settle_deg: 0.20
+    rotation_settle_flow_px: 0.75
+    rotation_settle_frames: 3
+    rebootstrap_validation_frames: 4
+    min_pnp_inliers: 10
     max_depth_m: 25.0
-    min_3d3d_inliers: 20
+    min_3d3d_inliers: 10
     max_3d3d_residual_m: 0.08
     motion_translation_tolerance_m: 0.20
     motion_rotation_tolerance_deg: 8.0
+    max_relative_translation_m: 0.35
+    max_relative_rotation_deg: 35.0
     stable_map_min_observations: 2
-    motion_reference_frames: 5
+    motion_reference_frames: 3
     motion_reference_translation_m: 0.04
     planar_motion_constraint: true
     straight_motion_constraint: true

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -112,6 +113,25 @@ class TopologySceneTest(unittest.TestCase):
         self.assertGreater(linear, 0.0)
         self.assertAlmostEqual(angular, 0.0)
         self.assertEqual(plan.command(1.0, 0.0, 0.0), (0.0, 0.0))
+        self.assertTrue(plan.completed)
+
+    def test_waypoint_controller_stops_and_rotates_at_heading_change(self):
+        plan = WaypointPlan([
+            (16.5, 0.0, 0.0),
+            (17.0, 0.0, math.pi),
+            (16.5, 0.0, math.pi),
+        ], 0.2)
+        plan.command(16.5, 0.0, 0.0)
+        linear, angular = plan.command(17.0, 0.0, 0.0)
+        self.assertEqual(plan.phase, "rotate")
+        self.assertEqual(linear, 0.0)
+        self.assertLessEqual(abs(angular), 0.22)
+        for _ in range(3):
+            self.assertEqual(plan.command(17.0, 0.0, 0.0)[0], 0.0)
+        self.assertEqual(plan.command(17.0, 0.0, math.pi), (0.0, 0.0))
+        self.assertEqual(plan.phase, "settle")
+        for _ in range(8):
+            plan.command(17.0, 0.0, math.pi)
         self.assertTrue(plan.completed)
 
     def test_waypoint_path_prefers_repository_relative_input(self):

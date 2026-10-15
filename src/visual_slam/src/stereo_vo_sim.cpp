@@ -107,14 +107,33 @@ public:
     stereo_reprojection_error_px_ = declare_parameter<double>("stereo_reprojection_error_px", 1.5);
     temporal_match_distance_ = declare_parameter<int>("temporal_match_distance", 52);
     min_stereo_points_ = declare_parameter<int>("min_stereo_points", 35);
-    min_pnp_inliers_ = declare_parameter<int>("min_pnp_inliers", 18);
+    min_tracking_stereo_points_ = declare_parameter<int>("min_tracking_stereo_points", 12);
+    recovery_stereo_points_ = declare_parameter<int>("recovery_stereo_points", 12);
+    max_consecutive_tracking_failures_ = declare_parameter<int>(
+      "max_consecutive_tracking_failures", 3);
+    rotation_min_matches_ = declare_parameter<int>("rotation_min_matches", 15);
+    rotation_min_deg_ = declare_parameter<double>("rotation_min_deg", 0.35);
+    rotation_max_translation_m_ = declare_parameter<double>(
+      "rotation_max_translation_m", 0.03);
+    rotation_max_residual_px_ = declare_parameter<double>("rotation_max_residual_px", 1.5);
+    rotation_scale_factor_ = declare_parameter<double>("rotation_scale_factor", 1.06);
+    rotation_settle_deg_ = declare_parameter<double>("rotation_settle_deg", 0.20);
+    rotation_settle_flow_px_ = declare_parameter<double>("rotation_settle_flow_px", 0.75);
+    rotation_settle_frames_ = declare_parameter<int>("rotation_settle_frames", 3);
+    rebootstrap_validation_frames_ = declare_parameter<int>(
+      "rebootstrap_validation_frames", 4);
+    min_pnp_inliers_ = declare_parameter<int>("min_pnp_inliers", 10);
     max_depth_m_ = declare_parameter<double>("max_depth_m", 25.0);
-    min_3d3d_inliers_ = declare_parameter<int>("min_3d3d_inliers", 20);
+    min_3d3d_inliers_ = declare_parameter<int>("min_3d3d_inliers", 10);
     max_3d3d_residual_m_ = declare_parameter<double>("max_3d3d_residual_m", 0.08);
     motion_translation_tolerance_m_ = declare_parameter<double>("motion_translation_tolerance_m", 0.20);
     motion_rotation_tolerance_deg_ = declare_parameter<double>("motion_rotation_tolerance_deg", 8.0);
+    max_relative_translation_m_ = declare_parameter<double>(
+      "max_relative_translation_m", 0.35);
+    max_relative_rotation_deg_ = declare_parameter<double>(
+      "max_relative_rotation_deg", 35.0);
     stable_map_min_observations_ = declare_parameter<int>("stable_map_min_observations", 2);
-    motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 5);
+    motion_reference_frames_ = declare_parameter<int>("motion_reference_frames", 3);
     motion_reference_translation_m_ = declare_parameter<double>("motion_reference_translation_m", 0.04);
     planar_motion_constraint_ = declare_parameter<bool>("planar_motion_constraint", true);
     straight_motion_constraint_ = declare_parameter<bool>("straight_motion_constraint", true);
@@ -265,6 +284,7 @@ private:
   struct Frame
   {
     cv::Mat left_image;
+    std::vector<cv::KeyPoint> temporal_keypoints;
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     std::vector<cv::Point3f> points3d;
@@ -634,11 +654,17 @@ private:
     cv::initUndistortRectifyMap(k2_, d2_, r2_, p2_, processing_size_, CV_32FC1, right_map_x_, right_map_y_);
     rectified_k_ = p1_(cv::Rect(0, 0, 3, 3)).clone();
     calibration_ready_ = true;
-    previous_.reset();
+    metric_keyframe_.reset();
+    temporal_reference_.reset();
     world_T_current_ = cv::Mat::eye(4, 4, CV_64F);
     reference_world_pose_ = world_T_current_.clone();
+    temporal_reference_world_pose_ = world_T_current_.clone();
     reference_age_ = 0;
     committed_distance_ = 0.0;
+    recovery_state_ = "tracking";
+    map_updates_enabled_ = true;
+    rotation_settle_count_ = 0;
+    validation_success_frames_ = 0;
     RCLCPP_INFO(get_logger(), "camera info ready: %dx%d -> %dx%d, fx=%.2f px, baseline=%.3f m",
       width, height, processing_size_.width, processing_size_.height, rectified_k_.at<double>(0, 0), baseline);
     publish_status("camera_info_ready", 0, 0, 0, 0.0, 0.0);
@@ -695,6 +721,110 @@ private:
     cv::Mat vector;
     cv::Rodrigues(lhs_rotation * rhs_rotation.t(), vector);
     return cv::norm(vector) * 180.0 / CV_PI;
+  }
+
+  static double rotation_angle_deg(const cv::Mat & pose)
+  {
+    cv::Mat vector;
+    cv::Rodrigues(pose(cv::Rect(0, 0, 3, 3)), vector);
+    return cv::norm(vector) * 180.0 / CV_PI;
+  }
+
+  bool estimate_temporal_rotation(
+    const Frame & previous, const Frame & current, cv::Mat & rotation,
+    int & inliers, double & angle_deg, int & tracked_matches,
+    double & median_flow_px, double & rotation_residual_px) const
+  {
+    rotation.release();
+    inliers = 0;
+    angle_deg = 0.0;
+    tracked_matches = 0;
+    median_flow_px = std::numeric_limits<double>::infinity();
+    rotation_residual_px = std::numeric_limits<double>::infinity();
+    if (previous.temporal_keypoints.size() < static_cast<std::size_t>(rotation_min_matches_))
+    {
+      return false;
+    }
+    std::vector<cv::Point2f> previous_pixels;
+    previous_pixels.reserve(previous.temporal_keypoints.size());
+    for (const auto & keypoint : previous.temporal_keypoints) {
+      previous_pixels.push_back(keypoint.pt);
+    }
+    std::vector<cv::Point2f> current_pixels, backward_pixels;
+    std::vector<unsigned char> forward_status, backward_status;
+    std::vector<float> forward_error, backward_error;
+    cv::calcOpticalFlowPyrLK(previous.left_image, current.left_image, previous_pixels,
+      current_pixels, forward_status, forward_error, cv::Size(21, 21), 3);
+    cv::calcOpticalFlowPyrLK(current.left_image, previous.left_image, current_pixels,
+      backward_pixels, backward_status, backward_error, cv::Size(21, 21), 3);
+    std::vector<cv::Point2f> accepted_previous, accepted_current;
+    for (std::size_t index = 0; index < previous_pixels.size(); ++index) {
+      if (!forward_status[index] || !backward_status[index] ||
+        cv::norm(previous_pixels[index] - backward_pixels[index]) > 1.0 ||
+        current_pixels[index].x < 1.0F || current_pixels[index].y < 1.0F ||
+        current_pixels[index].x >= current.left_image.cols - 1.0F ||
+        current_pixels[index].y >= current.left_image.rows - 1.0F)
+      {
+        continue;
+      }
+      accepted_previous.push_back(previous_pixels[index]);
+      accepted_current.push_back(current_pixels[index]);
+    }
+    tracked_matches = static_cast<int>(accepted_previous.size());
+    std::vector<double> flow_magnitudes;
+    flow_magnitudes.reserve(accepted_previous.size());
+    for (std::size_t index = 0; index < accepted_previous.size(); ++index) {
+      flow_magnitudes.push_back(cv::norm(accepted_current[index] - accepted_previous[index]));
+    }
+    if (!flow_magnitudes.empty()) {
+      const auto middle = flow_magnitudes.begin() + flow_magnitudes.size() / 2U;
+      std::nth_element(flow_magnitudes.begin(), middle, flow_magnitudes.end());
+      median_flow_px = *middle;
+    }
+    if (accepted_previous.size() < static_cast<std::size_t>(rotation_min_matches_)) {
+      return false;
+    }
+    const double focal_x = rectified_k_.at<double>(0, 0);
+    const double center_x = rectified_k_.at<double>(0, 2);
+    std::vector<double> bearing_deltas;
+    bearing_deltas.reserve(accepted_previous.size());
+    for (std::size_t index = 0; index < accepted_previous.size(); ++index) {
+      const double previous_bearing = std::atan2(
+        accepted_previous[index].x - center_x, focal_x);
+      const double current_bearing = std::atan2(
+        accepted_current[index].x - center_x, focal_x);
+      bearing_deltas.push_back(current_bearing - previous_bearing);
+    }
+    const auto bearing_middle = bearing_deltas.begin() + bearing_deltas.size() / 2U;
+    std::nth_element(bearing_deltas.begin(), bearing_middle, bearing_deltas.end());
+    // Image bearings move opposite to the camera pose yaw. The fixed scale is
+    // calibrated once on development data and never reads online truth.
+    const double image_bearing_delta = *bearing_middle;
+    const double yaw_delta = -image_bearing_delta * rotation_scale_factor_;
+    std::vector<double> residuals;
+    residuals.reserve(bearing_deltas.size());
+    inliers = 0;
+    for (const double delta : bearing_deltas) {
+      const double residual = std::abs(delta - image_bearing_delta) * focal_x;
+      residuals.push_back(residual);
+      if (residual <= rotation_max_residual_px_) {
+        ++inliers;
+      }
+    }
+    if (inliers < rotation_min_matches_) {
+      return false;
+    }
+    const auto residual_middle = residuals.begin() + residuals.size() / 2U;
+    std::nth_element(residuals.begin(), residual_middle, residuals.end());
+    rotation_residual_px = *residual_middle;
+    const double cosine = std::cos(yaw_delta);
+    const double sine = std::sin(yaw_delta);
+    rotation = (cv::Mat_<double>(3, 3) <<
+      cosine, 0.0, sine,
+      0.0, 1.0, 0.0,
+      -sine, 0.0, cosine);
+    angle_deg = std::abs(yaw_delta) * 180.0 / CV_PI;
+    return std::isfinite(angle_deg) && std::isfinite(rotation_residual_px);
   }
 
   static double json_number(double value)
@@ -1756,6 +1886,7 @@ private:
     orb_->detectAndCompute(right_rectified, cv::noArray(), right_keypoints, right_descriptors);
     Frame frame;
     frame.left_image = left_rectified;
+    frame.temporal_keypoints = left_keypoints;
     if (left_descriptors.empty() || right_descriptors.empty()) {
       return frame;
     }
@@ -1860,16 +1991,95 @@ private:
     last_frame_min_depth_ = current.min_depth;
     last_frame_median_depth_ = current.median_depth;
     last_frame_reprojection_rmse_ = current.stereo_reprojection_rmse;
-    if (stereo_points < min_stereo_points_) {
+    cv::Mat temporal_rotation;
+    int temporal_rotation_inliers = 0;
+    int temporal_matches = 0;
+    double temporal_rotation_deg = 0.0;
+    double temporal_flow_px = std::numeric_limits<double>::infinity();
+    double temporal_rotation_residual_px = std::numeric_limits<double>::infinity();
+    const bool temporal_rotation_ok = temporal_reference_ && estimate_temporal_rotation(
+      *temporal_reference_, current, temporal_rotation, temporal_rotation_inliers,
+      temporal_rotation_deg, temporal_matches, temporal_flow_px,
+      temporal_rotation_residual_px);
+    last_rotation_2d_inliers_ = temporal_rotation_inliers;
+    last_rotation_2d_deg_ = temporal_rotation_deg;
+    last_temporal_matches_ = temporal_matches;
+    last_temporal_flow_px_ = temporal_flow_px;
+    last_rotation_2d_residual_px_ = temporal_rotation_residual_px;
+    const bool pure_rotation_model = temporal_rotation_ok &&
+      temporal_rotation_residual_px <= rotation_max_residual_px_;
+    const auto apply_temporal_rotation = [&]() {
+        cv::Mat current_T_temporal = cv::Mat::eye(4, 4, CV_64F);
+        temporal_rotation.copyTo(current_T_temporal(cv::Rect(0, 0, 3, 3)));
+        world_T_current_ = temporal_reference_world_pose_ * current_T_temporal.inv();
+        if (planar_motion_constraint_) {
+          world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
+        }
+        temporal_reference_ = current;
+        temporal_reference_world_pose_ = world_T_current_.clone();
+        recovery_state_ = "rotation_only";
+        map_updates_enabled_ = false;
+        rotation_settle_count_ = 0;
+        motion_source_ = "visual_rotation_2d";
+        last_relative_translation_ = {0.0, 0.0, 0.0};
+        ++tracked_pairs_;
+        consecutive_tracking_failures_ = 0;
+        trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9,
+          world_T_current_.clone()});
+        publish_odometry(stamp, temporal_rotation_inliers);
+        publish_status("rotation_only", stereo_points, temporal_matches, 0,
+          pair_delta_ms, elapsed_ms(started));
+      };
+    if (recovery_state_ == "rotation_only") {
+      if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
+        apply_temporal_rotation();
+        return;
+      }
+      const bool settled = temporal_matches >= rotation_min_matches_ &&
+        std::isfinite(temporal_flow_px) && temporal_flow_px <= rotation_settle_flow_px_;
+      rotation_settle_count_ = settled ? rotation_settle_count_ + 1 : 0;
+      temporal_reference_ = current;
+      temporal_reference_world_pose_ = world_T_current_.clone();
+      if (rotation_settle_count_ >= rotation_settle_frames_ &&
+        stereo_points >= recovery_stereo_points_)
+      {
+        metric_keyframe_ = current;
+        reference_world_pose_ = world_T_current_.clone();
+        reference_age_ = 0;
+        committed_distance_ = trajectory_distance_;
+        validation_success_frames_ = 0;
+        recovery_state_ = "validating";
+        motion_source_ = "stereo_rebootstrap";
+        rotation_settle_count_ = 0;
+        publish_status("rebootstrap", stereo_points, temporal_matches, 0,
+          pair_delta_ms, elapsed_ms(started));
+      } else {
+        publish_status(settled ? "rotation_settling" : "rotation_waiting",
+          stereo_points, temporal_matches, 0, pair_delta_ms, elapsed_ms(started));
+      }
+      return;
+    }
+    if (stereo_points < min_tracking_stereo_points_) {
+      if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
+        apply_temporal_rotation();
+        return;
+      }
       ++tracking_failures_;
+      ++consecutive_tracking_failures_;
+      temporal_reference_ = current;
+      temporal_reference_world_pose_ = world_T_current_.clone();
+      maybe_refresh_reference(current, stereo_points, 0, pair_delta_ms, started,
+        "insufficient_stereo_features");
       publish_status("insufficient_stereo_features", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
       return;
     }
-    if (!previous_) {
-      previous_ = std::move(current);
+    if (!metric_keyframe_) {
+      metric_keyframe_ = current;
+      temporal_reference_ = current;
       reference_world_pose_ = world_T_current_.clone();
+      temporal_reference_world_pose_ = world_T_current_.clone();
       reference_age_ = 0;
-      insert_keyframe(*previous_, world_T_current_, trajectory_distance_);
+      insert_keyframe(*metric_keyframe_, world_T_current_, trajectory_distance_);
       trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9, world_T_current_.clone()});
       update_loaded_submaps();
       publish_status("initialized", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
@@ -1880,8 +2090,8 @@ private:
     std::vector<cv::Point3f> current_points3d;
     std::set<int> used_current_indices;
     std::vector<cv::Point2f> previous_pixels;
-    previous_pixels.reserve(previous_->keypoints.size());
-    for (const auto & keypoint : previous_->keypoints) {
+    previous_pixels.reserve(metric_keyframe_->keypoints.size());
+    for (const auto & keypoint : metric_keyframe_->keypoints) {
       previous_pixels.push_back(keypoint.pt);
     }
     std::vector<cv::Point2f> tracked_pixels;
@@ -1890,10 +2100,10 @@ private:
     std::vector<unsigned char> backward_status;
     std::vector<float> forward_error;
     std::vector<float> backward_error;
-    cv::calcOpticalFlowPyrLK(previous_->left_image, current.left_image, previous_pixels,
+    cv::calcOpticalFlowPyrLK(metric_keyframe_->left_image, current.left_image, previous_pixels,
       tracked_pixels, forward_status, forward_error, cv::Size(21, 21), 3,
       cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01));
-    cv::calcOpticalFlowPyrLK(current.left_image, previous_->left_image, tracked_pixels,
+    cv::calcOpticalFlowPyrLK(current.left_image, metric_keyframe_->left_image, tracked_pixels,
       backward_pixels, backward_status, backward_error, cv::Size(21, 21), 3,
       cv::TermCriteria(cv::TermCriteria::COUNT | cv::TermCriteria::EPS, 30, 0.01));
     for (std::size_t index = 0; index < previous_pixels.size(); ++index) {
@@ -1917,7 +2127,7 @@ private:
       if (nearest_index < 0 || !used_current_indices.insert(nearest_index).second) {
         continue;
       }
-      object_points.push_back(previous_->points3d[index]);
+      object_points.push_back(metric_keyframe_->points3d[index]);
       image_points.push_back(tracked_pixels[index]);
       current_points3d.push_back(current.points3d[nearest_index]);
     }
@@ -1975,10 +2185,35 @@ private:
     } else if (rigid_ok && pnp_ok && !motion_consistent) {
       motion_source_ = "inconsistent_motion";
     }
+    const bool rotation_dominant = pure_rotation_model &&
+      temporal_rotation_deg >= rotation_min_deg_ &&
+      (selected_transform.empty() ||
+      (pose_translation(selected_transform) <= rotation_max_translation_m_ &&
+      rotation_angle_deg(selected_transform) >= rotation_min_deg_));
+    if (rotation_dominant) {
+      apply_temporal_rotation();
+      return;
+    }
     if (selected_transform.empty()) {
       ++tracking_failures_;
+      ++consecutive_tracking_failures_;
+      temporal_reference_ = current;
+      temporal_reference_world_pose_ = world_T_current_.clone();
+      maybe_refresh_reference(current, stereo_points, static_cast<int>(object_points.size()),
+        pair_delta_ms, started, "tracking_lost");
       publish_status("tracking_lost", stereo_points, static_cast<int>(object_points.size()), inlier_count,
         pair_delta_ms, elapsed_ms(started));
+      return;
+    }
+    if (pose_translation(selected_transform) > max_relative_translation_m_ ||
+      rotation_angle_deg(selected_transform) > max_relative_rotation_deg_)
+    {
+      ++tracking_failures_;
+      ++consecutive_tracking_failures_;
+      maybe_refresh_reference(current, stereo_points, static_cast<int>(object_points.size()),
+        pair_delta_ms, started, "motion_outlier");
+      publish_status("motion_outlier", stereo_points, static_cast<int>(object_points.size()),
+        inlier_count, pair_delta_ms, elapsed_ms(started));
       return;
     }
     if (straight_motion_constraint_) {
@@ -1991,7 +2226,7 @@ private:
     last_relative_translation_[0] = selected_transform.at<double>(0, 3);
     last_relative_translation_[1] = selected_transform.at<double>(1, 3);
     last_relative_translation_[2] = selected_transform.at<double>(2, 3);
-    // previous_ is held for a short reference window, so selected_transform
+    // The metric keyframe is held for a short reference window, so selected_transform
     // already represents current_T_reference and must not be multiplied by
     // estimates from earlier frames in the same window.
     world_T_current_ = reference_world_pose_ * selected_transform.inv();
@@ -2018,7 +2253,7 @@ private:
         world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
       }
     }
-    if (last_keyframe_pose_ && should_insert_keyframe(world_T_current_,
+    if (map_updates_enabled_ && last_keyframe_pose_ && should_insert_keyframe(world_T_current_,
       std::max(inlier_count, rigid_inliers))) {
       insert_keyframe(current, world_T_current_, trajectory_distance_);
       update_loaded_submaps();
@@ -2029,19 +2264,56 @@ private:
     {
       committed_distance_ = trajectory_distance_;
       reference_world_pose_ = world_T_current_.clone();
-      previous_ = std::move(current);
+      metric_keyframe_ = current;
       reference_age_ = 0;
     }
+    temporal_reference_ = current;
+    temporal_reference_world_pose_ = world_T_current_.clone();
+    if (recovery_state_ == "validating") {
+      ++validation_success_frames_;
+      if (validation_success_frames_ >= rebootstrap_validation_frames_) {
+        recovery_state_ = "tracking";
+        map_updates_enabled_ = true;
+      }
+    }
     ++tracked_pairs_;
+    consecutive_tracking_failures_ = 0;
     trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9, world_T_current_.clone()});
     publish_odometry(stamp, inlier_count);
-    publish_status("tracking", stereo_points, static_cast<int>(object_points.size()), inlier_count,
+    publish_status(recovery_state_ == "validating" ? "validating" : "tracking",
+      stereo_points, static_cast<int>(object_points.size()), inlier_count,
       pair_delta_ms, elapsed_ms(started));
   }
 
   static double elapsed_ms(const std::chrono::steady_clock::time_point & started)
   {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  }
+
+  void maybe_refresh_reference(
+    const Frame & current, int stereo_points, int match_count, double pair_delta_ms,
+    const std::chrono::steady_clock::time_point & started, const std::string & reason)
+  {
+    if (!metric_keyframe_ || stereo_points < recovery_stereo_points_ ||
+      consecutive_tracking_failures_ < max_consecutive_tracking_failures_)
+    {
+      return;
+    }
+    // Re-anchor only the temporal matcher. The world pose is held at the last
+    // valid estimate and no failed frame contributes keyframes or map points.
+    metric_keyframe_ = current;
+    temporal_reference_ = current;
+    reference_world_pose_ = world_T_current_.clone();
+    temporal_reference_world_pose_ = world_T_current_.clone();
+    reference_age_ = 0;
+    validation_success_frames_ = 0;
+    recovery_state_ = "validating";
+    map_updates_enabled_ = false;
+    motion_source_ = "stereo_rebootstrap";
+    consecutive_tracking_failures_ = 0;
+    publish_status("rebootstrap", stereo_points, match_count, 0,
+      pair_delta_ms, elapsed_ms(started));
+    (void)reason;
   }
 
   void publish_odometry(const builtin_interfaces::msg::Time & stamp, int inliers)
@@ -2143,6 +2415,14 @@ private:
          << ",\"submap_apply_pose_correction\":" <<
       (submap_apply_pose_correction_ ? "true" : "false")
          << ",\"motion_source\":\"" << motion_source_ << "\""
+         << ",\"vo_recovery_state\":\"" << recovery_state_ << "\""
+         << ",\"rotation_2d_inliers\":" << last_rotation_2d_inliers_
+         << ",\"rotation_2d_deg\":" << last_rotation_2d_deg_
+         << ",\"temporal_matches_2d\":" << last_temporal_matches_
+         << ",\"temporal_flow_px\":" << json_number(last_temporal_flow_px_)
+         << ",\"rotation_2d_residual_px\":" << json_number(last_rotation_2d_residual_px_)
+         << ",\"map_updates_enabled\":" << (map_updates_enabled_ ? "true" : "false")
+         << ",\"validation_success_frames\":" << validation_success_frames_
          << ",\"valid_matches\":" << temporal_matches
          << ",\"ransac_inliers\":" << last_rigid_inliers_
          << ",\"median_disparity_px\":" << last_frame_median_disparity_
@@ -2278,6 +2558,18 @@ private:
   double stereo_reprojection_error_px_{};
   int temporal_match_distance_{};
   int min_stereo_points_{};
+  int min_tracking_stereo_points_{12};
+  int recovery_stereo_points_{12};
+  int max_consecutive_tracking_failures_{3};
+  int rotation_min_matches_{15};
+  double rotation_min_deg_{0.35};
+  double rotation_max_translation_m_{0.03};
+  double rotation_max_residual_px_{1.5};
+  double rotation_scale_factor_{1.06};
+  double rotation_settle_deg_{0.20};
+  double rotation_settle_flow_px_{0.75};
+  int rotation_settle_frames_{3};
+  int rebootstrap_validation_frames_{4};
   int min_pnp_inliers_{};
   double max_depth_m_{};
   double min_disparity_{};
@@ -2285,8 +2577,10 @@ private:
   double max_3d3d_residual_m_{};
   double motion_translation_tolerance_m_{};
   double motion_rotation_tolerance_deg_{};
+  double max_relative_translation_m_{0.35};
+  double max_relative_rotation_deg_{35.0};
   int stable_map_min_observations_{};
-  int motion_reference_frames_{};
+  int motion_reference_frames_{3};
   double motion_reference_translation_m_{};
   bool planar_motion_constraint_{true};
   bool straight_motion_constraint_{true};
@@ -2348,6 +2642,11 @@ private:
   bool calibration_ready_{false};
   int rejected_pairs_{0};
   int tracking_failures_{0};
+  int consecutive_tracking_failures_{0};
+  int rotation_settle_count_{0};
+  int validation_success_frames_{0};
+  int last_rotation_2d_inliers_{0};
+  int last_temporal_matches_{0};
   int tracked_pairs_{0};
   int processed_frames_{0};
   int last_rigid_inliers_{0};
@@ -2355,12 +2654,17 @@ private:
   double last_motion_translation_difference_{std::numeric_limits<double>::infinity()};
   double last_motion_rotation_difference_{std::numeric_limits<double>::infinity()};
   double last_motion_consistency_{0.0};
+  double last_rotation_2d_deg_{0.0};
+  double last_temporal_flow_px_{std::numeric_limits<double>::infinity()};
+  double last_rotation_2d_residual_px_{std::numeric_limits<double>::infinity()};
   double last_frame_median_disparity_{0.0};
   double last_frame_min_depth_{0.0};
   double last_frame_median_depth_{0.0};
   double last_frame_reprojection_rmse_{0.0};
   std::array<double, 3> last_relative_translation_{0.0, 0.0, 0.0};
   std::string motion_source_{"none"};
+  std::string recovery_state_{"tracking"};
+  bool map_updates_enabled_{true};
   std::optional<sensor_msgs::msg::CameraInfo> left_info_;
   std::optional<sensor_msgs::msg::CameraInfo> right_info_;
   cv::Mat k1_, k2_, d1_, d2_, r1_, r2_, p1_, p2_, q_, rectified_k_;
@@ -2370,6 +2674,7 @@ private:
   cv::Mat world_T_current_;
   cv::Mat gazebo_T_map_;
   cv::Mat reference_world_pose_;
+  cv::Mat temporal_reference_world_pose_;
   double trajectory_distance_{0.0};
   double committed_distance_{0.0};
   int reference_age_{0};
@@ -2415,7 +2720,8 @@ private:
   LoopClosure last_loop_closure_;
   cv::Ptr<cv::ORB> orb_;
   cv::Ptr<cv::BFMatcher> matcher_;
-  std::optional<Frame> previous_;
+  std::optional<Frame> temporal_reference_;
+  std::optional<Frame> metric_keyframe_;
   std::deque<sensor_msgs::msg::Image::ConstSharedPtr> left_queue_;
   std::deque<sensor_msgs::msg::Image::ConstSharedPtr> right_queue_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr left_subscription_;
