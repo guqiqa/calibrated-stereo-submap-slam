@@ -1159,18 +1159,51 @@ private:
       previous != visual_slam::VisualState::kReacquired && unobserved_entry_frame_ &&
       temporal_reference_)
     {
+      // 1) Adjacent-reference bridge: descriptor matching plus Wahba between the
+      // last trusted frame (R_pre) and the reacquiring frame (R_post).
       cv::Mat closure_rotation;
       int closure_matches = 0;
       int closure_inliers = 0;
       double closure_yaw_deg = 0.0;
       double closure_residual_px = std::numeric_limits<double>::infinity();
-      const bool closure_ok = estimate_descriptor_rotation(*unobserved_entry_frame_,
+      double closure_rotation_deg = std::numeric_limits<double>::quiet_NaN();
+      double closure_translation_m = std::numeric_limits<double>::quiet_NaN();
+      const bool descriptor_closure_ok = estimate_descriptor_rotation(*unobserved_entry_frame_,
         *temporal_reference_, closure_rotation, closure_matches, closure_inliers,
         closure_yaw_deg, closure_residual_px);
-      if (closure_ok && std::isfinite(closure_yaw_deg)) {
-        last_observability_closure_rotation_deg_ = std::abs(closure_yaw_deg);
-        observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
-          std::numeric_limits<double>::quiet_NaN(), last_observability_closure_rotation_deg_, -1);
+      if (descriptor_closure_ok && std::isfinite(closure_yaw_deg)) {
+        closure_rotation_deg = std::abs(closure_yaw_deg);
+      }
+      // 2) Absolute check against the built map: PnP against historical keyframes
+      // gives an independent R_post pose, which is what the interval needs.
+      visual_slam::IntervalCloseReason close_reason =
+        visual_slam::IntervalCloseReason::kAnchorValidation;
+      last_relocalization_attempted_ = true;
+      const LoopClosure relocalization = detect_loop_closure(*temporal_reference_);
+      last_relocalization_keyframe_id_ = relocalization.keyframe_id;
+      last_relocalization_matches_ = relocalization.matches;
+      last_relocalization_inliers_ = relocalization.inliers;
+      last_relocalization_reprojection_rmse_ = relocalization.reprojection_rmse;
+      if (relocalization.accepted && !relocalization.corrected_pose.empty()) {
+        last_relocalization_pose_jump_m_ = pose_distance(
+          relocalization.corrected_pose, world_T_current_);
+        if (last_relocalization_pose_jump_m_ <= rotation_relocalization_max_pose_jump_m_) {
+          last_relocalization_accepted_ = true;
+          closure_translation_m = last_relocalization_pose_jump_m_;
+          closure_rotation_deg = rotation_difference_deg(
+            relocalization.corrected_pose, world_T_current_);
+          close_reason = visual_slam::IntervalCloseReason::kRelocalization;
+        } else {
+          last_relocalization_reject_reason_ = "pose_jump_out_of_range";
+        }
+      } else {
+        last_relocalization_reject_reason_ = "pnp_geometry_rejected";
+      }
+      if (std::isfinite(closure_rotation_deg) || std::isfinite(closure_translation_m)) {
+        last_observability_closure_rotation_deg_ = closure_rotation_deg;
+        last_observability_closure_translation_m_ = closure_translation_m;
+        observability_.finalize_interval(close_reason, closure_translation_m,
+          closure_rotation_deg, -1);
       }
     }
     if (current_state == visual_slam::VisualState::kObserved) {
@@ -3167,6 +3200,7 @@ private:
            observability_.current_interval().closed_by) << "\""
          << ",\"unobserved_unresolved\":" << observability_.unresolved_interval_count()
          << ",\"unobserved_closure_rotation_deg\":" << json_number(last_observability_closure_rotation_deg_)
+         << ",\"unobserved_closure_translation_m\":" << json_number(last_observability_closure_translation_m_)
          << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
          << ",\"evidence_features\":" << observability_.last_evidence().features
          << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
@@ -3378,6 +3412,7 @@ private:
   bool observability_started_{false};
   double last_frame_grid_coverage_{-1.0};
   double last_observability_closure_rotation_deg_{std::numeric_limits<double>::quiet_NaN()};
+  double last_observability_closure_translation_m_{std::numeric_limits<double>::quiet_NaN()};
   std::optional<Frame> unobserved_entry_frame_{};
   cv::Mat unobserved_entry_world_pose_;
   std::string scene_id_{"legacy_distance_scene"};

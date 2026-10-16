@@ -257,6 +257,17 @@ def build_report(run_dir: Path, label: str, blind_match_threshold: float) -> Run
     report.frames = len(frames)
     report.span_s = frames[-1].t - frames[0].t
     report.has_observability = "visual_state" in frames[0].raw
+    # Ignore truth samples recorded before/after the processed window: the
+    # simulator reset at the start can carry a heading step that would otherwise
+    # be counted as real rotation.
+    window_start = frames[0].t - 0.5
+    window_end = frames[-1].t + 0.5
+    truth = [item for item in truth if window_start <= item.t <= window_end]
+    if len(truth) < 2:
+        report.notices.append("truth window is empty after trimming to the processed frames")
+        return report
+    truth_times = [item.t for item in truth]
+    truth_yaw = unwrap_series([item.yaw_gazebo for item in truth])
 
     yaw_source, visual_series = load_visual_yaw(run_dir)
     report.yaw_source = yaw_source
