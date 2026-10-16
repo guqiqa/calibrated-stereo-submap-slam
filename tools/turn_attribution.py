@@ -132,6 +132,11 @@ class RunReport:
     blind_window_s: float = 0.0
     blind_truth_yaw_deg: float = 0.0
     blind_applied_yaw_deg: float = 0.0
+    truth_yaw_path_deg: float = 0.0
+    visual_yaw_path_deg: float = 0.0
+    truth_yaw_max_deg: float = 0.0
+    visual_yaw_max_deg: float = 0.0
+    blind_windows: List[Dict[str, float]] = field(default_factory=list)
     applied_intervals: int = 0
     applied_yaw_deg: float = 0.0
     applied_truth_yaw_deg: float = 0.0
@@ -157,6 +162,17 @@ class RunReport:
             "blind_window_s": round(self.blind_window_s, 2),
             "blind_truth_yaw_deg": round(self.blind_truth_yaw_deg, 2),
             "blind_applied_yaw_deg": round(self.blind_applied_yaw_deg, 2),
+            "truth_yaw_path_deg": round(self.truth_yaw_path_deg, 2),
+            "visual_yaw_path_deg": round(self.visual_yaw_path_deg, 2),
+            "truth_yaw_max_deg": round(self.truth_yaw_max_deg, 2),
+            "visual_yaw_max_deg": round(self.visual_yaw_max_deg, 2),
+            "blind_windows": [
+                {"start_t": round(item["start_t"], 3), "end_t": round(item["end_t"], 3),
+                 "frames": int(item["frames"]), "duration_s": round(item["duration_s"], 2),
+                 "truth_yaw_deg": round(item["truth_yaw_deg"], 2),
+                 "applied_yaw_deg": round(item["applied_yaw_deg"], 2)}
+                for item in self.blind_windows
+            ],
             "applied_intervals": self.applied_intervals,
             "applied_yaw_deg": round(self.applied_yaw_deg, 2),
             "applied_truth_yaw_deg": round(self.applied_truth_yaw_deg, 2),
@@ -247,6 +263,10 @@ def build_report(run_dir: Path, label: str, blind_match_threshold: float) -> Run
     if visual_series:
         visual_yaw = unwrap_series([item[1] for item in visual_series])
         report.visual_yaw_deg = degrees(visual_yaw[-1] - visual_yaw[0])
+        if len(visual_yaw) > 1:
+            report.visual_yaw_path_deg = degrees(sum(
+                abs(visual_yaw[index] - visual_yaw[index - 1]) for index in range(1, len(visual_yaw))))
+        report.visual_yaw_max_deg = degrees(max(abs(value - visual_yaw[0]) for value in visual_yaw))
         report.applied_yaw_deg = to_float(frames[-1].get("rotation_total_yaw_deg"), 0.0)
     else:
         applied = [to_float(frame.get("rotation_total_yaw_deg"), 0.0) for frame in frames]
@@ -254,6 +274,10 @@ def build_report(run_dir: Path, label: str, blind_match_threshold: float) -> Run
         report.applied_yaw_deg = report.visual_yaw_deg
     report.truth_yaw_deg = degrees(truth_yaw[-1] - truth_yaw[0])
     report.deficit_deg = report.visual_yaw_deg - report.truth_yaw_deg
+    if len(truth_yaw) > 1:
+        report.truth_yaw_path_deg = degrees(sum(
+            abs(truth_yaw[index] - truth_yaw[index - 1]) for index in range(1, len(truth_yaw))))
+    report.truth_yaw_max_deg = degrees(max(abs(value - truth_yaw[0]) for value in truth_yaw))
 
     by_decision: Dict[str, Dict[str, float]] = {}
     by_visual_state: Dict[str, Dict[str, float]] = {}
@@ -320,13 +344,37 @@ def build_report(run_dir: Path, label: str, blind_match_threshold: float) -> Run
     report.dropped_events = dropped_events
     report.dropped_truth_yaw_deg = dropped_truth
 
-    if blind_frames:
+    windows: List[Dict[str, float]] = []
+    current_window: Optional[Dict[str, float]] = None
+    for frame in frames:
+        matches = to_float(frame.get("temporal_matches_2d"), float("nan"))
+        blind = math.isfinite(matches) and matches < blind_match_threshold
+        total = to_float(frame.get("rotation_total_yaw_deg"), 0.0)
+        if blind and current_window is None:
+            current_window = {"start_t": frame.t, "end_t": frame.t, "frames": 0.0,
+                              "total_start": total, "total_end": total}
+        if blind and current_window is not None:
+            current_window["frames"] += 1
+            current_window["end_t"] = frame.t
+            current_window["total_end"] = total
+        elif not blind and current_window is not None:
+            windows.append(current_window)
+            current_window = None
+    if current_window is not None:
+        windows.append(current_window)
+    for window in windows:
+        window["truth_yaw_deg"] = degrees(
+            truth_yaw_at(window["end_t"]) - truth_yaw_at(window["start_t"]))
+        window["applied_yaw_deg"] = window["total_end"] - window["total_start"]
+        window["duration_s"] = window["end_t"] - window["start_t"]
+    windows.sort(key=lambda item: item["frames"], reverse=True)
+    report.blind_windows = windows[:10]
+    if windows:
+        longest = windows[0]
         report.blind_frames = len(blind_frames)
-        report.blind_window_s = blind_frames[-1].t - blind_frames[0].t
-        report.blind_truth_yaw_deg = degrees(truth_yaw_at(blind_frames[-1].t) - truth_yaw_at(blind_frames[0].t))
-        first_total = to_float(blind_frames[0].get("rotation_total_yaw_deg"), 0.0)
-        last_total = to_float(blind_frames[-1].get("rotation_total_yaw_deg"), first_total)
-        report.blind_applied_yaw_deg = last_total - first_total
+        report.blind_window_s = longest["duration_s"]
+        report.blind_truth_yaw_deg = longest["truth_yaw_deg"]
+        report.blind_applied_yaw_deg = longest["applied_yaw_deg"]
 
     if report.has_observability:
         current: Optional[UnobservedInterval] = None
@@ -370,9 +418,17 @@ def render_markdown(reports: Sequence[RunReport]) -> str:
             report.applied_intervals, report.applied_yaw_deg, report.applied_truth_yaw_deg))
         lines.append("- 参考重置丢弃：%d 次，丢弃真值转角 %.2f°" % (
             report.dropped_events, report.dropped_truth_yaw_deg))
-        lines.append("- 匹配空窗：%d 帧 / %.1f s，期间真值转角 %.2f°，视觉记账 %.2f°" % (
+        lines.append("- yaw 净变化：真值 %.2f°，视觉 %.2f°；yaw 路径长度：真值 %.2f°，视觉 %.2f°；最大偏离：真值 %.2f°，视觉 %.2f°" % (
+            report.truth_yaw_deg, report.visual_yaw_deg,
+            report.truth_yaw_path_deg, report.visual_yaw_path_deg,
+            report.truth_yaw_max_deg, report.visual_yaw_max_deg))
+        lines.append("- 匹配空窗：共 %d 帧；最长连续空窗 %.1f s，期间真值转角 %.2f°，视觉记账 %.2f°" % (
             report.blind_frames, report.blind_window_s,
             report.blind_truth_yaw_deg, report.blind_applied_yaw_deg))
+        for window in report.blind_windows[:5]:
+            lines.append("  - 空窗 %.1f s / %d 帧：真值 %.2f°，视觉 %.2f°" % (
+                window["duration_s"], int(window["frames"]),
+                window["truth_yaw_deg"], window["applied_yaw_deg"]))
         if report.has_observability:
             lines.append("- 显式 UNOBSERVED 区间：%d 个" % len(report.intervals))
             for interval in report.intervals:
