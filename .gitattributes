@@ -1,0 +1,27 @@
+# 行尾统一：仓库内文本文件一律 LF，避免 Windows/WSL 双向工作产生虚假 diff
+* text=auto eol=lf
+
+# 二进制/生成物：禁止行尾转换与文本 diff
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pgm binary
+*.pdf binary
+*.zip binary
+*.bag binary
+*.caj binary
+*.xls binary
+*.xlsx binary
+*.pt binary
+*.onnx binary
+*.so binary
+*.so.* binary
+*.a binary
+*.o binary
+*.pyc binary
+
+# 必须在 Linux/WSL 下执行的脚本，强制 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.launch.py text eol=lf

@@ -35,3 +35,25 @@ __pycache__/
 *.swp
 Thumbs.db
 desktop.ini
+
+# 大体积研究资产：默认不入库（确需入库用 git add -f）
+/paper_package/
+
+# 实验目录：默认只保留轻量结果文件；逐帧数据、地图、rosbag、图片一律忽略
+/experiments/**
+!/experiments/**/
+!/experiments/*.md
+!/experiments/*.json
+!/experiments/**/*.md
+!/experiments/**/profile.json
+!/experiments/**/campaign_state.json
+!/experiments/**/campaign_manifest.json
+!/experiments/**/campaign_summary.json
+!/experiments/**/experiment_manifest.json
+!/experiments/**/experiment_summary.md
+!/experiments/**/metadata.json
+!/experiments/**/resolved_parameters.yaml
+!/experiments/**/summary.json
+!/experiments/**/segment_metrics.csv
+!/experiments/**/segment_report.json
+!/experiments/**/data_quality_report.json
