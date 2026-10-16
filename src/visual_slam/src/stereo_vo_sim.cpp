@@ -2372,7 +2372,9 @@ private:
   {
     const auto started = std::chrono::steady_clock::now();
     ++processed_frames_;
+    const std::optional<Frame> previous_frame = last_processed_frame_;
     Frame current = make_stereo_frame(left, right);
+    last_processed_frame_ = current;
     std::vector<cv::Point2f> coverage_points;
     coverage_points.reserve(current.keypoints.size());
     for (const auto & keypoint : current.keypoints) {
@@ -2483,6 +2485,45 @@ private:
       }
     }
 
+    // Dual-reference rule: R_track is the immediately previous frame. A
+    // one-frame baseline keeps the rotation increment observable even after the
+    // baseline against the last applied frame has gone stale. The increment is
+    // composed from the previous frame world pose, so no untracked interval is
+    // silently absorbed; the accounting stays with the observability machine.
+    bool use_short_baseline_rotation = false;
+    int short_baseline_matches = 0;
+    int short_baseline_inliers = 0;
+    double short_baseline_yaw_deg = 0.0;
+    double short_baseline_flow_px = std::numeric_limits<double>::infinity();
+    double short_baseline_residual_px = std::numeric_limits<double>::infinity();
+    const bool primary_rotation_trusted =
+      (temporal_rotation_ok && temporal_rotation_residual_px <= rotation_max_residual_px_) ||
+      (use_descriptor_temporal_rotation &&
+      temporal_rotation_residual_px <= rotation_wahba_max_residual_px_);
+    if (!observability_.legacy_mode() && previous_frame && !primary_rotation_trusted) {
+      cv::Mat short_rotation;
+      const bool short_ok = estimate_temporal_rotation(*previous_frame, current, short_rotation,
+        short_baseline_inliers, short_baseline_yaw_deg, short_baseline_matches,
+        short_baseline_flow_px, short_baseline_residual_px);
+      if (short_ok && short_baseline_matches >= rotation_min_matches_ &&
+        std::isfinite(short_baseline_residual_px) &&
+        short_baseline_residual_px <= rotation_max_residual_px_)
+      {
+        temporal_rotation = short_rotation;
+        temporal_rotation_deg = short_baseline_yaw_deg;
+        temporal_rotation_inliers = short_baseline_inliers;
+        temporal_flow_px = short_baseline_flow_px;
+        temporal_rotation_residual_px = short_baseline_residual_px;
+        use_short_baseline_rotation = true;
+        last_rotation_estimator_ = "short_baseline_2d";
+        rotation_anchor_gap_frames_ = 0;
+      }
+    }
+    last_short_baseline_used_ = use_short_baseline_rotation;
+    last_short_baseline_matches_ = short_baseline_matches;
+    last_short_baseline_inliers_ = short_baseline_inliers;
+    last_short_baseline_yaw_deg_ = use_short_baseline_rotation ? short_baseline_yaw_deg : 0.0;
+
     cv::Mat anchor_rotation;
     int anchor_matches = 0;
     int anchor_inliers = 0;
@@ -2558,7 +2599,7 @@ private:
       last_rotation_observation_ = "temporal_2d";
     }
     const bool pure_rotation_model =
-      ((temporal_rotation_ok || use_temporal_metric_rotation) &&
+      ((temporal_rotation_ok || use_temporal_metric_rotation || use_short_baseline_rotation) &&
       temporal_rotation_residual_px <= rotation_max_residual_px_) ||
       ((use_anchor_rotation || use_descriptor_temporal_rotation) &&
       temporal_rotation_residual_px <= rotation_wahba_max_residual_px_);
@@ -2616,7 +2657,7 @@ private:
       const bool anchor_gap_unresolved = rotation_anchor_gap_frames_ > 0 && !use_anchor_rotation;
       const bool local_gap_fallback = anchor_gap_unresolved &&
         rotation_wait_count_ >= rotation_wait_rebootstrap_frames_ &&
-        (temporal_rotation_ok || use_descriptor_temporal_rotation);
+        (temporal_rotation_ok || use_descriptor_temporal_rotation || use_short_baseline_rotation);
       const bool meaningful_rotation = pure_rotation_model &&
         (!anchor_gap_unresolved || local_gap_fallback) &&
         (temporal_rotation_deg >= rotation_settle_deg_ ||
@@ -2627,12 +2668,14 @@ private:
           last_rotation_decision_ = "local_rotation_fallback_after_anchor_gap";
           last_rotation_estimator_ = "temporal_after_anchor_gap";
         }
-        const cv::Mat source_pose = use_anchor_rotation ? rotation_anchor_world_pose_ :
-          temporal_reference_world_pose_;
+        const cv::Mat source_pose = use_short_baseline_rotation ? world_T_current_ :
+          (use_anchor_rotation ? rotation_anchor_world_pose_ : temporal_reference_world_pose_);
         apply_temporal_rotation(source_pose);
         return;
       }
-      const bool settled = !anchor_gap_unresolved && temporal_matches >= rotation_min_matches_ &&
+      const int effective_matches = use_short_baseline_rotation ? short_baseline_matches :
+        temporal_matches;
+      const bool settled = !anchor_gap_unresolved && effective_matches >= rotation_min_matches_ &&
         std::isfinite(temporal_flow_px) && temporal_flow_px <= rotation_settle_flow_px_ &&
         (!pure_rotation_model || temporal_rotation_deg <= rotation_settle_deg_);
       rotation_settle_count_ = settled ? rotation_settle_count_ + 1 : 0;
@@ -2642,8 +2685,10 @@ private:
       } else {
         ++rotation_wait_count_;
         ++rotation_wait_frames_total_;
-        if ((!temporal_rotation_ok && !use_descriptor_temporal_rotation) ||
-          (temporal_matches < rotation_min_matches_ && !use_descriptor_temporal_rotation)) {
+        if ((!temporal_rotation_ok && !use_descriptor_temporal_rotation &&
+          !use_short_baseline_rotation) ||
+          (effective_matches < rotation_min_matches_ && !use_descriptor_temporal_rotation &&
+          !use_short_baseline_rotation)) {
           ++rotation_estimation_failure_frames_;
           last_rotation_decision_ = "temporal_match_failure";
         } else if (anchor_gap_unresolved) {
@@ -2716,7 +2761,8 @@ private:
     }
     if (stereo_points < min_tracking_stereo_points_) {
       if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
-        apply_temporal_rotation(temporal_reference_world_pose_);
+        apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
+          temporal_reference_world_pose_);
         return;
       }
       ++tracking_failures_;
@@ -2847,7 +2893,8 @@ private:
       (pose_translation(selected_transform) <= rotation_max_translation_m_ &&
       rotation_angle_deg(selected_transform) >= rotation_min_deg_));
     if (rotation_dominant) {
-      apply_temporal_rotation(temporal_reference_world_pose_);
+      apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
+        temporal_reference_world_pose_);
       return;
     }
     if (selected_transform.empty()) {
@@ -3201,6 +3248,10 @@ private:
          << ",\"unobserved_unresolved\":" << observability_.unresolved_interval_count()
          << ",\"unobserved_closure_rotation_deg\":" << json_number(last_observability_closure_rotation_deg_)
          << ",\"unobserved_closure_translation_m\":" << json_number(last_observability_closure_translation_m_)
+         << ",\"short_baseline_used\":" << (last_short_baseline_used_ ? "true" : "false")
+         << ",\"short_baseline_matches\":" << last_short_baseline_matches_
+         << ",\"short_baseline_inliers\":" << last_short_baseline_inliers_
+         << ",\"short_baseline_yaw_deg\":" << last_short_baseline_yaw_deg_
          << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
          << ",\"evidence_features\":" << observability_.last_evidence().features
          << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
@@ -3414,6 +3465,11 @@ private:
   double last_observability_closure_rotation_deg_{std::numeric_limits<double>::quiet_NaN()};
   double last_observability_closure_translation_m_{std::numeric_limits<double>::quiet_NaN()};
   std::optional<Frame> unobserved_entry_frame_{};
+  std::optional<Frame> last_processed_frame_{};
+  bool last_short_baseline_used_{false};
+  int last_short_baseline_matches_{0};
+  int last_short_baseline_inliers_{0};
+  double last_short_baseline_yaw_deg_{0.0};
   cv::Mat unobserved_entry_world_pose_;
   std::string scene_id_{"legacy_distance_scene"};
   std::string map_version_{"legacy-distance-v1"};
