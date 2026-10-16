@@ -265,6 +265,15 @@ class ExperimentRecorder(Node):
             "candidate_coverage_reason", "none_of_the_above",
             "query_route", "query_waypoint", "query_type", "frame_role",
             "query_waypoint_distance_m",
+            "observability_mode", "visual_state", "visual_measurement_valid",
+            "observability_reason", "observability_verdict",
+            "observability_frames_since_valid", "r_pre_frame", "r_post_frame",
+            "reacquire_confirm_frames", "unobserved_interval_id", "unobserved_frames",
+            "unobserved_total_frames", "unobserved_closed_by", "unobserved_unresolved",
+            "unobserved_closure_rotation_deg", "relocalization_required",
+            "evidence_features", "evidence_inliers", "evidence_inlier_ratio",
+            "evidence_reprojection_px", "evidence_view_change_deg",
+            "evidence_grid_coverage", "evidence_condition_number",
         ]
         with (self.output_dir / "frame_diagnostics.csv").open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")

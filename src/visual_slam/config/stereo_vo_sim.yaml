@@ -98,3 +98,21 @@ stereo_vo_sim:
     calibration_model_path: ""
     map_database_path: ""
     map_database_mode: online
+    observability_mode: b0_plain
+    obs_min_features_ok: 30
+    obs_min_features_enter: 15
+    obs_min_inliers_ok: 20
+    obs_min_inliers_enter: 10
+    obs_min_inlier_ratio_ok: 0.45
+    obs_min_inlier_ratio_enter: 0.25
+    obs_max_reprojection_ok: 2.0
+    obs_max_reprojection_enter: 3.0
+    obs_max_view_change_ok_deg: 15.0
+    obs_max_view_change_enter_deg: 20.0
+    obs_min_grid_coverage_ok: 5
+    obs_min_grid_coverage_enter: 3
+    obs_max_condition_ok: 1000.0
+    obs_max_condition_enter: 10000.0
+    obs_enter_frames: 2
+    obs_exit_frames: 3
+    obs_relocalization_timeout_frames: 90

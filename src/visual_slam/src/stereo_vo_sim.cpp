@@ -27,6 +27,7 @@
 #include <opencv2/video/tracking.hpp>
 
 #include "visual_slam/geometry.hpp"
+#include "visual_slam/observability.hpp"
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -212,6 +213,26 @@ public:
     calibration_model_path_ = declare_parameter<std::string>("calibration_model_path", "");
     map_database_path_ = declare_parameter<std::string>("map_database_path", "");
     map_database_mode_ = declare_parameter<std::string>("map_database_mode", "online");
+    observability_mode_name_ = declare_parameter<std::string>("observability_mode", "b0_plain");
+    observability_thresholds_.enabled = observability_mode_name_ != "b0_plain";
+    observability_thresholds_.min_features_ok = declare_parameter<int>("obs_min_features_ok", 30);
+    observability_thresholds_.min_features_enter = declare_parameter<int>("obs_min_features_enter", 15);
+    observability_thresholds_.min_inliers_ok = declare_parameter<int>("obs_min_inliers_ok", 20);
+    observability_thresholds_.min_inliers_enter = declare_parameter<int>("obs_min_inliers_enter", 10);
+    observability_thresholds_.min_inlier_ratio_ok = declare_parameter<double>("obs_min_inlier_ratio_ok", 0.45);
+    observability_thresholds_.min_inlier_ratio_enter = declare_parameter<double>("obs_min_inlier_ratio_enter", 0.25);
+    observability_thresholds_.max_reprojection_ok = declare_parameter<double>("obs_max_reprojection_ok", 2.0);
+    observability_thresholds_.max_reprojection_enter = declare_parameter<double>("obs_max_reprojection_enter", 3.0);
+    observability_thresholds_.max_view_change_ok_deg = declare_parameter<double>("obs_max_view_change_ok_deg", 15.0);
+    observability_thresholds_.max_view_change_enter_deg = declare_parameter<double>("obs_max_view_change_enter_deg", 20.0);
+    observability_thresholds_.min_grid_coverage_ok = declare_parameter<int>("obs_min_grid_coverage_ok", 5);
+    observability_thresholds_.min_grid_coverage_enter = declare_parameter<int>("obs_min_grid_coverage_enter", 3);
+    observability_thresholds_.max_condition_ok = declare_parameter<double>("obs_max_condition_ok", 1000.0);
+    observability_thresholds_.max_condition_enter = declare_parameter<double>("obs_max_condition_enter", 10000.0);
+    observability_thresholds_.enter_frames = declare_parameter<int>("obs_enter_frames", 2);
+    observability_thresholds_.exit_frames = declare_parameter<int>("obs_exit_frames", 3);
+    observability_thresholds_.relocalization_timeout_frames = declare_parameter<int>(
+      "obs_relocalization_timeout_frames", 90);
     gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
       initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_, initial_gazebo_yaw_);
     if (online_submap_id_mode_ != "distance" && online_submap_id_mode_ != "scene") {
@@ -289,6 +310,17 @@ public:
     if (stereo_translation_scale_factor_ < 0.8 || stereo_translation_scale_factor_ > 1.3) {
       throw std::runtime_error("stereo_translation_scale_factor must be within [0.8, 1.3]");
     }
+    if (observability_mode_name_ != "b0_plain" && observability_mode_name_ != "b1_flag" &&
+      observability_mode_name_ != "b2_dual")
+    {
+      throw std::runtime_error("observability_mode must be b0_plain, b1_flag or b2_dual");
+    }
+    if (!observability_thresholds_.consistent()) {
+      throw std::runtime_error("observability thresholds are inconsistent");
+    }
+    observability_ = visual_slam::ObservabilityStateMachine(
+      to_observability_mode(observability_mode_name_), observability_thresholds_);
+    observability_.reset();
     orb_ = cv::ORB::create(max_features_);
     matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, false);
     odometry_publisher_ = create_publisher<nav_msgs::msg::Odometry>(odometry_topic_, 10);
@@ -1057,6 +1089,90 @@ private:
   static double json_number(double value)
   {
     return std::isfinite(value) ? value : -1.0;
+  }
+
+  static visual_slam::ObservabilityMode to_observability_mode(const std::string & name)
+  {
+    if (name == "b1_flag") {
+      return visual_slam::ObservabilityMode::kB1Flag;
+    }
+    if (name == "b2_dual") {
+      return visual_slam::ObservabilityMode::kB2Dual;
+    }
+    return visual_slam::ObservabilityMode::kB0Plain;
+  }
+
+  // Evidence is always measured against the reference that produced the current
+  // relative estimate. Non-evaluated metrics stay not-a-number so that the
+  // criterion is skipped instead of failing.
+  visual_slam::ObservabilityEvidence build_observability_evidence(
+    int stereo_points, int temporal_matches, int pnp_inliers) const
+  {
+    visual_slam::ObservabilityEvidence evidence;
+    evidence.features = std::max(stereo_points, temporal_matches);
+    evidence.inliers = std::max(pnp_inliers, std::max(last_rigid_inliers_, last_rotation_2d_inliers_));
+    evidence.available = evidence.features > 0;
+    evidence.inlier_ratio = evidence.features > 0 ?
+      static_cast<double>(evidence.inliers) / static_cast<double>(evidence.features) : 0.0;
+    evidence.reprojection_px = std::isfinite(last_frame_reprojection_rmse_) ?
+      last_frame_reprojection_rmse_ : last_rotation_2d_residual_px_;
+    const cv::Mat & reference_pose = temporal_reference_world_pose_.empty() ?
+      reference_world_pose_ : temporal_reference_world_pose_;
+    if (!reference_pose.empty() && !world_T_current_.empty()) {
+      evidence.view_change_deg = rotation_difference_deg(world_T_current_, reference_pose);
+    }
+    evidence.grid_coverage = last_frame_grid_coverage_ >= 0.0 ?
+      static_cast<int>(last_frame_grid_coverage_ + 0.5) : -1;
+    return evidence;
+  }
+
+  void update_observability(int stereo_points, int temporal_matches, int pnp_inliers)
+  {
+    if (!metric_keyframe_ || world_T_current_.empty()) {
+      return;
+    }
+    const visual_slam::ObservabilityEvidence evidence =
+      build_observability_evidence(stereo_points, temporal_matches, pnp_inliers);
+    if (!observability_started_) {
+      if (evidence.inliers > 0) {
+        observability_started_ = true;
+      } else {
+        return;
+      }
+    }
+    last_observability_flags_ =
+      visual_slam::disqualifying_flags(evidence, observability_thresholds_);
+    const visual_slam::VisualState previous = observability_.state();
+    observability_.update(evidence);
+    const visual_slam::VisualState current_state = observability_.state();
+    if (current_state == visual_slam::VisualState::kUnobserved &&
+      previous != visual_slam::VisualState::kUnobserved && temporal_reference_)
+    {
+      // R_pre snapshot: the last frame that still produced a trusted estimate.
+      unobserved_entry_frame_ = *temporal_reference_;
+      unobserved_entry_world_pose_ = temporal_reference_world_pose_.clone();
+    }
+    if (current_state == visual_slam::VisualState::kReacquired &&
+      previous != visual_slam::VisualState::kReacquired && unobserved_entry_frame_ &&
+      temporal_reference_)
+    {
+      cv::Mat closure_rotation;
+      int closure_matches = 0;
+      int closure_inliers = 0;
+      double closure_yaw_deg = 0.0;
+      double closure_residual_px = std::numeric_limits<double>::infinity();
+      const bool closure_ok = estimate_descriptor_rotation(*unobserved_entry_frame_,
+        *temporal_reference_, closure_rotation, closure_matches, closure_inliers,
+        closure_yaw_deg, closure_residual_px);
+      if (closure_ok && std::isfinite(closure_yaw_deg)) {
+        last_observability_closure_rotation_deg_ = std::abs(closure_yaw_deg);
+        observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
+          std::numeric_limits<double>::quiet_NaN(), last_observability_closure_rotation_deg_, -1);
+      }
+    }
+    if (current_state == visual_slam::VisualState::kObserved) {
+      unobserved_entry_frame_ = std::nullopt;
+    }
   }
 
   void set_rotation_anchor(const Frame & frame, const cv::Mat & world_pose)
@@ -2221,6 +2337,13 @@ private:
     const auto started = std::chrono::steady_clock::now();
     ++processed_frames_;
     Frame current = make_stereo_frame(left, right);
+    std::vector<cv::Point2f> coverage_points;
+    coverage_points.reserve(current.keypoints.size());
+    for (const auto & keypoint : current.keypoints) {
+      coverage_points.push_back(keypoint.pt);
+    }
+    last_frame_grid_coverage_ = static_cast<double>(visual_slam::grid_coverage(coverage_points,
+      static_cast<double>(processing_size_.width), static_cast<double>(processing_size_.height), 3));
     const int stereo_points = static_cast<int>(current.points3d.size());
     last_frame_median_disparity_ = current.median_disparity;
     last_frame_min_depth_ = current.min_depth;
@@ -2694,8 +2817,12 @@ private:
     if (selected_transform.empty()) {
       ++tracking_failures_;
       ++consecutive_tracking_failures_;
-      temporal_reference_ = current;
-      temporal_reference_world_pose_ = world_T_current_.clone();
+      // Invariant I1: a frame that does not update the pose must not move the
+      // trusted reference. Only the legacy B0 mode keeps the old behaviour.
+      if (observability_.legacy_mode()) {
+        temporal_reference_ = current;
+        temporal_reference_world_pose_ = world_T_current_.clone();
+      }
       maybe_refresh_reference(current, stereo_points, static_cast<int>(object_points.size()),
         pair_delta_ms, started, "tracking_lost");
       publish_status("tracking_lost", stereo_points, static_cast<int>(object_points.size()), inlier_count,
@@ -2736,7 +2863,17 @@ private:
     yaw_update_source_ = "metric_transform";
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
-    evaluate_submaps(current);
+    if (observability_.measurement_valid()) {
+      evaluate_submaps(current);
+    } else {
+      // The pose of an unobserved frame is a prediction, not a visual
+      // measurement, so it must not drive candidate ranking or switching.
+      last_candidates_.clear();
+      last_selected_submap_ = -1;
+      last_geometry_verified_ = false;
+      last_retrieval_decision_ = "hold";
+      last_reject_reason_ = "visual_measurement_unobserved";
+    }
     last_loop_closure_ = LoopClosure{};
     if (loop_closure_enabled_ && processed_frames_ % loop_check_period_frames_ == 0) {
       last_loop_closure_ = detect_loop_closure(current);
@@ -2801,6 +2938,13 @@ private:
     {
       return;
     }
+    if (!observability_.legacy_mode()) {
+      // B1/B2: the trusted reference is only moved after the observability state
+      // machine confirms reacquisition. Failed frames keep the interval open
+      // instead of silently re-anchoring and dropping the accumulated motion.
+      (void)reason;
+      return;
+    }
     // Re-anchor only the temporal matcher. The world pose is held at the last
     // valid estimate and no failed frame contributes keyframes or map points.
     metric_keyframe_ = current;
@@ -2845,6 +2989,7 @@ private:
     std_msgs::msg::String status;
     std::ostringstream data;
     const std::string switch_state = pending_switch_frames_ > 0 ? "confirming" : "stable";
+    update_observability(stereo_points, temporal_matches, pnp_inliers);
     data << "{\"state\":\"" << state << "\",\"stereo_points\":" << stereo_points
          << ",\"temporal_matches\":" << temporal_matches << ",\"pnp_inliers\":" << pnp_inliers
          << ",\"pair_delta_ms\":" << pair_delta_ms << ",\"processing_ms\":" << processing_ms
@@ -3003,6 +3148,30 @@ private:
          << ",\"loop_closure_rmse_px\":" << json_number(last_loop_closure_.reprojection_rmse)
          << ",\"loop_closure_apply_correction\":" << (loop_closure_apply_correction_ ? "true" : "false")
          << ",\"loop_closure_count\":" << loop_closure_count_
+         << ",\"observability_mode\":\"" << observability_mode_name_ << "\""
+         << ",\"visual_state\":\"" << visual_slam::to_string(observability_.state()) << "\""
+         << ",\"visual_measurement_valid\":" << (observability_.measurement_valid() ? "true" : "false")
+         << ",\"observability_reason\":\"" << visual_slam::flags_to_string(last_observability_flags_) << "\""
+         << ",\"observability_verdict\":\"" << visual_slam::to_string(observability_.last_verdict()) << "\""
+         << ",\"observability_frames_since_valid\":" << observability_.frames_since_valid_measurement()
+         << ",\"r_pre_frame\":" << observability_.r_pre_frame()
+         << ",\"r_post_frame\":" << observability_.r_post_frame()
+         << ",\"reacquire_confirm_frames\":" << observability_.reacquire_confirm_frames()
+         << ",\"unobserved_interval_id\":" << observability_.current_interval().id
+         << ",\"unobserved_frames\":" << observability_.current_interval().frames
+         << ",\"unobserved_total_frames\":" << observability_.total_unobserved_frames()
+         << ",\"unobserved_closed_by\":\"" << visual_slam::to_string(
+           observability_.current_interval().closed_by) << "\""
+         << ",\"unobserved_unresolved\":" << observability_.unresolved_interval_count()
+         << ",\"unobserved_closure_rotation_deg\":" << json_number(last_observability_closure_rotation_deg_)
+         << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
+         << ",\"evidence_features\":" << observability_.last_evidence().features
+         << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
+         << ",\"evidence_inlier_ratio\":" << observability_.last_evidence().inlier_ratio
+         << ",\"evidence_reprojection_px\":" << json_number(observability_.last_evidence().reprojection_px)
+         << ",\"evidence_view_change_deg\":" << json_number(observability_.last_evidence().view_change_deg)
+         << ",\"evidence_grid_coverage\":" << observability_.last_evidence().grid_coverage
+         << ",\"evidence_condition_number\":" << json_number(observability_.last_evidence().condition_number)
          << "}";
     status.data = data.str();
     status_publisher_->publish(status);
@@ -3199,6 +3368,15 @@ private:
   std::string map_database_path_;
   std::string map_database_mode_{"online"};
   bool map_database_loaded_{false};
+  std::string observability_mode_name_{"b0_plain"};
+  visual_slam::ObservabilityThresholds observability_thresholds_{};
+  visual_slam::ObservabilityStateMachine observability_{};
+  std::uint32_t last_observability_flags_{0};
+  bool observability_started_{false};
+  double last_frame_grid_coverage_{-1.0};
+  double last_observability_closure_rotation_deg_{std::numeric_limits<double>::quiet_NaN()};
+  std::optional<Frame> unobserved_entry_frame_{};
+  cv::Mat unobserved_entry_world_pose_;
   std::string scene_id_{"legacy_distance_scene"};
   std::string map_version_{"legacy-distance-v1"};
   std::string calibration_version_{"unfitted-v0"};
