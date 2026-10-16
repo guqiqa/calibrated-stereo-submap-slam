@@ -498,11 +498,12 @@ def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
 def start_vo(mode, log_path, map_export_path=None, initial_pose=None,
              scene_manifest=None, submap_truth=None, candidate_label=None,
              calibration_model=None, map_database=None, map_database_mode="online",
-             rotation_metric_pnp_enabled=False):
+             rotation_metric_pnp_enabled=False, observability_mode="b0_plain"):
     log_handle = log_path.open("w", encoding="utf-8")
     launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py",
                    f"submap_mode:={mode}",
-                   f"rotation_metric_pnp_enabled:={str(rotation_metric_pnp_enabled).lower()}"]
+                   f"rotation_metric_pnp_enabled:={str(rotation_metric_pnp_enabled).lower()}",
+                   f"observability_mode:={observability_mode}"]
     if map_export_path is not None:
         launch_args.append(f"map_export_path:={map_export_path}")
     if scene_manifest and submap_truth:
@@ -748,7 +749,7 @@ def run_one(node, mode, run, args, root):
         mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose,
         args.scene_manifest, args.submap_truth, args.candidate_label,
         args.calibration_model, args.map_database, args.map_database_mode,
-        args.rotation_metric_pnp)
+        args.rotation_metric_pnp, args.observability_mode)
     resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
     resource_monitor.start()
     bag_process = None
@@ -916,6 +917,9 @@ def parse_args():
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     parser.add_argument("--rotation-metric-pnp", action="store_true",
                         help="Use guarded stereo-PnP yaw during rotation-only recovery")
+    parser.add_argument("--observability-mode", default="b0_plain",
+                        choices=("b0_plain", "b1_flag", "b2_dual"),
+                        help="Visual observability state management mode")
     return parser.parse_args()
 
 

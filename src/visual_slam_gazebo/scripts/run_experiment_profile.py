@@ -119,6 +119,9 @@ def parse_args():
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     parser.add_argument("--rotation-metric-pnp", action="store_true",
                         help="Enable guarded stereo-PnP yaw for VO diagnostics")
+    parser.add_argument("--observability-mode", default="b0_plain",
+                        choices=("b0_plain", "b1_flag", "b2_dual"),
+                        help="Visual observability state management mode")
     return parser.parse_args()
 
 
@@ -362,6 +365,7 @@ def main():
         command.append("--record-bag")
     if args.rotation_metric_pnp:
         command.append("--rotation-metric-pnp")
+    command.extend(["--observability-mode", args.observability_mode])
     if waypoint_route:
         command.extend(["--waypoint-route", str(waypoint_route)])
     if args.scene_manifest:
@@ -389,6 +393,7 @@ def main():
         "angular_radps": args.angular,
         "max_turn_angular_radps": args.max_turn_angular,
         "rotation_metric_pnp": args.rotation_metric_pnp,
+        "observability_mode": args.observability_mode,
         "scene_model": "154 m maximum scene: 0-120 m evaluation route + approximately 30 m visual buffer",
     }
     if scene_manifest:
