@@ -1109,11 +1109,14 @@ private:
     int stereo_points, int temporal_matches, int pnp_inliers) const
   {
     visual_slam::ObservabilityEvidence evidence;
-    evidence.features = std::max(stereo_points, temporal_matches);
-    evidence.inliers = std::max(pnp_inliers, std::max(last_rigid_inliers_, last_rotation_2d_inliers_));
-    evidence.available = evidence.features > 0;
-    evidence.inlier_ratio = evidence.features > 0 ?
-      static_cast<double>(evidence.inliers) / static_cast<double>(evidence.features) : 0.0;
+    const int feature_count = std::max(stereo_points, temporal_matches);
+    const int metric_inliers = std::max(pnp_inliers, last_rigid_inliers_);
+    const int candidate_inliers = std::max(metric_inliers, last_rotation_2d_inliers_);
+    evidence.features = feature_count;
+    evidence.inliers = feature_count > 0 ? std::min(feature_count, candidate_inliers) : candidate_inliers;
+    evidence.available = feature_count > 0;
+    evidence.inlier_ratio = feature_count > 0 ?
+      std::min(1.0, static_cast<double>(candidate_inliers) / static_cast<double>(feature_count)) : 0.0;
     evidence.reprojection_px = std::isfinite(last_frame_reprojection_rmse_) ?
       last_frame_reprojection_rmse_ : last_rotation_2d_residual_px_;
     const cv::Mat & reference_pose = temporal_reference_world_pose_.empty() ?
