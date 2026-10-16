@@ -20,8 +20,8 @@ import threading
 import time
 
 import rclpy
-from gazebo_msgs.msg import EntityState
-from gazebo_msgs.srv import SetEntityState
+from gazebo_msgs.msg import EntityState, ModelState
+from gazebo_msgs.srv import SetEntityState, SetModelState
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
@@ -145,6 +145,8 @@ class ExperimentRecorder(Node):
         self.reset_client = self.create_client(Empty, "/reset_world")
         self.unpause_client = self.create_client(Empty, "/unpause_physics")
         self.set_entity_client = self.create_client(SetEntityState, "/set_entity_state")
+        self.set_entity_gazebo_client = self.create_client(SetEntityState, "/gazebo/set_entity_state")
+        self.set_model_client = self.create_client(SetModelState, "/gazebo/set_model_state")
 
     @staticmethod
     def load_submap_regions(path):
@@ -238,7 +240,21 @@ class ExperimentRecorder(Node):
             "ransac_inliers", "pnp_inliers", "median_disparity_px", "depth_min_m",
             "depth_median_m", "stereo_reprojection_px", "motion_consistency",
             "vo_recovery_state", "rotation_2d_inliers", "rotation_2d_deg",
+            "rotation_2d_signed_deg", "temporal_metric_inliers",
+            "temporal_metric_yaw_deg", "rotation_anchor_used",
+            "rotation_anchor_matches", "rotation_anchor_inliers",
+            "rotation_anchor_yaw_deg", "rotation_anchor_gap_frames",
+            "rotation_anchor_pending_frames", "rotation_anchor_recovery_count",
+            "rotation_descriptor_used", "rotation_descriptor_matches",
+            "rotation_descriptor_inliers", "rotation_descriptor_yaw_deg",
+            "rotation_estimator", "yaw_update_source",
             "temporal_matches_2d", "temporal_flow_px", "rotation_2d_residual_px",
+            "temporal_rotation_ok", "pure_rotation_model", "rotation_decision",
+            "rotation_episode_yaw_deg", "rotation_last_episode_yaw_deg",
+            "rotation_total_yaw_deg", "rotation_updates_total",
+            "rotation_wait_frames_total", "rotation_estimation_failure_frames",
+            "rotation_residual_rejection_frames", "rotation_subthreshold_frames",
+            "rotation_rebootstrap_count", "rotation_settle_count", "rotation_wait_count",
             "map_updates_enabled", "validation_success_frames",
             "visual_distance_m", "processing_ms", "matching_ms", "active_map_points",
             "map_points_stable", "tracking_failures",
@@ -407,22 +423,43 @@ class ExperimentRecorder(Node):
         if not future.done() or future.exception() is not None:
             raise RuntimeError("Gazebo unpause failed")
         if self.waypoint_plan is not None:
-            if not self.set_entity_client.wait_for_service(timeout_sec=5.0):
-                raise RuntimeError("/set_entity_state is unavailable for waypoint initialization")
             x, y, yaw = self.waypoint_plan.waypoints[0]
-            request = SetEntityState.Request()
-            request.state = EntityState()
-            request.state.name = "stereo_robot"
-            request.state.reference_frame = "world"
-            request.state.pose.position.x = x
-            request.state.pose.position.y = y
-            request.state.pose.orientation.z = math.sin(yaw / 2.0)
-            request.state.pose.orientation.w = math.cos(yaw / 2.0)
-            future = self.set_entity_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
-            if (not future.done() or future.exception() is not None or
-                    not future.result().success):
-                raise RuntimeError("failed to initialize robot at the first waypoint")
+            needs_pose_reset = math.hypot(x, y) > 1e-3 or abs(math.atan2(
+                math.sin(yaw), math.cos(yaw))) > 1e-3
+            if needs_pose_reset:
+                pose_client = self.set_entity_client
+                service_kind = "entity"
+                if not pose_client.wait_for_service(timeout_sec=2.0):
+                    pose_client = self.set_entity_gazebo_client
+                    service_kind = "entity"
+                if not pose_client.wait_for_service(timeout_sec=2.0):
+                    pose_client = self.set_model_client
+                    service_kind = "model"
+                if not pose_client.wait_for_service(timeout_sec=5.0):
+                    raise RuntimeError(
+                        "Gazebo pose reset services are unavailable "
+                        "for non-default waypoint initialization")
+                if service_kind == "model":
+                    request = SetModelState.Request()
+                    request.model_state = ModelState()
+                    request.model_state.model_name = "stereo_robot"
+                    request.model_state.reference_frame = "world"
+                    pose = request.model_state.pose
+                else:
+                    request = SetEntityState.Request()
+                    request.state = EntityState()
+                    request.state.name = "stereo_robot"
+                    request.state.reference_frame = "world"
+                    pose = request.state.pose
+                pose.position.x = x
+                pose.position.y = y
+                pose.orientation.z = math.sin(yaw / 2.0)
+                pose.orientation.w = math.cos(yaw / 2.0)
+                future = pose_client.call_async(request)
+                rclpy.spin_until_future_complete(self, future, timeout_sec=10.0)
+                if (not future.done() or future.exception() is not None or
+                        not future.result().success):
+                    raise RuntimeError("failed to initialize robot at the first waypoint")
         self.send_stop()
 
 
@@ -451,9 +488,12 @@ def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
 
 def start_vo(mode, log_path, map_export_path=None, initial_pose=None,
              scene_manifest=None, submap_truth=None, candidate_label=None,
-             calibration_model=None, map_database=None, map_database_mode="online"):
+             calibration_model=None, map_database=None, map_database_mode="online",
+             rotation_metric_pnp_enabled=False):
     log_handle = log_path.open("w", encoding="utf-8")
-    launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py", f"submap_mode:={mode}"]
+    launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py",
+                   f"submap_mode:={mode}",
+                   f"rotation_metric_pnp_enabled:={str(rotation_metric_pnp_enabled).lower()}"]
     if map_export_path is not None:
         launch_args.append(f"map_export_path:={map_export_path}")
     if scene_manifest and submap_truth:
@@ -669,7 +709,9 @@ def run_one(node, mode, run, args, root):
     node.right_image_stamps.clear()
     node.expected_mode = mode
     node.direction = 1.0
-    node.waypoint_plan = (WaypointPlan(load_waypoints(args.waypoint_route), args.speed)
+    node.waypoint_plan = (WaypointPlan(
+        load_waypoints(args.waypoint_route), args.speed,
+        max_angular=args.max_turn_angular)
                           if args.waypoint_route else None)
     node.output_dir = output_dir
     node.open_files()
@@ -696,7 +738,8 @@ def run_one(node, mode, run, args, root):
     process, log_handle = start_vo(
         mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose,
         args.scene_manifest, args.submap_truth, args.candidate_label,
-        args.calibration_model, args.map_database, args.map_database_mode)
+        args.calibration_model, args.map_database, args.map_database_mode,
+        args.rotation_metric_pnp)
     resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
     resource_monitor.start()
     bag_process = None
@@ -758,6 +801,7 @@ def run_one(node, mode, run, args, root):
             "run": run,
             "duration_s": args.duration,
             "command_speed_mps": args.speed,
+            "max_turn_angular_radps": args.max_turn_angular,
             "camera": {"width": 640, "height": 480, "rate_hz": 15, "baseline_m": 0.07},
             "submap": KEY_PARAMETERS,
             "calibration_version": os.environ.get(
@@ -843,6 +887,8 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=20.0)
     parser.add_argument("--warmup", type=float, default=3.0)
     parser.add_argument("--speed", type=float, default=0.2)
+    parser.add_argument("--max-turn-angular", type=float, default=0.22,
+                        help="maximum angular velocity for waypoint turns in rad/s")
     parser.add_argument("--angular", type=float, default=0.0)
     parser.add_argument("--output", default="experiments/submap")
     parser.add_argument("--export-map", action="store_true",
@@ -859,6 +905,8 @@ def parse_args():
     parser.add_argument("--calibration-model")
     parser.add_argument("--map-database")
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
+    parser.add_argument("--rotation-metric-pnp", action="store_true",
+                        help="Use guarded stereo-PnP yaw during rotation-only recovery")
     return parser.parse_args()
 
 

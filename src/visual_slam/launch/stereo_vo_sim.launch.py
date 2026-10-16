@@ -20,6 +20,7 @@ def generate_launch_description():
         DeclareLaunchArgument("initial_gazebo_z", default_value="0.32"),
         DeclareLaunchArgument("initial_gazebo_yaw", default_value="0.0"),
         DeclareLaunchArgument("straight_motion_constraint", default_value="true"),
+        DeclareLaunchArgument("rotation_metric_pnp_enabled", default_value="false"),
         DeclareLaunchArgument("scene_manifest_path", default_value=""),
         DeclareLaunchArgument("submap_truth_path", default_value=""),
         DeclareLaunchArgument("candidate_label_path", default_value=""),
@@ -47,6 +48,8 @@ def generate_launch_description():
                         LaunchConfiguration("initial_gazebo_yaw"), value_type=float),
                     "straight_motion_constraint": ParameterValue(
                         LaunchConfiguration("straight_motion_constraint"), value_type=bool),
+                    "rotation_metric_pnp_enabled": ParameterValue(
+                        LaunchConfiguration("rotation_metric_pnp_enabled"), value_type=bool),
                     "scene_manifest_path": LaunchConfiguration("scene_manifest_path"),
                     "submap_truth_path": LaunchConfiguration("submap_truth_path"),
                     "candidate_label_path": LaunchConfiguration("candidate_label_path"),

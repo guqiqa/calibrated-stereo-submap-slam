@@ -136,9 +136,10 @@ class WaypointPlan:
 
 if Node is not None:
     class WaypointController(Node):
-        def __init__(self, route, speed, report):
+        def __init__(self, route, speed, report, max_angular=0.22):
             super().__init__("visual_slam_waypoint_controller")
-            self.plan = WaypointPlan(load_waypoints(route), speed)
+            self.plan = WaypointPlan(load_waypoints(route), speed,
+                                     max_angular=max_angular)
             self.report = Path(report) if report else None
             self.publisher = self.create_publisher(Twist, "/sim/cmd_vel", 10)
             self.create_subscription(Odometry, "/sim/odom", self.odom_callback, 20)
@@ -166,9 +167,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("route")
     parser.add_argument("--speed", type=float, default=0.254522061)
+    parser.add_argument("--max-angular", type=float, default=0.22)
     parser.add_argument("--report")
     args = parser.parse_args()
-    rclpy.init(); node = WaypointController(args.route, args.speed, args.report)
+    rclpy.init(); node = WaypointController(args.route, args.speed, args.report,
+                                             args.max_angular)
     try:
         rclpy.spin(node)
     finally:

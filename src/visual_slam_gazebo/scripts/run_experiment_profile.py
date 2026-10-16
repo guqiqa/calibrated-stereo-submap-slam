@@ -88,6 +88,8 @@ def parse_args():
     parser.add_argument("--reverse-after", type=float, default=None,
                         help="Override route reversal time for round-trip profiles")
     parser.add_argument("--angular", type=float, default=0.0)
+    parser.add_argument("--max-turn-angular", type=float, default=0.22,
+                        help="maximum angular velocity for waypoint turns in rad/s")
     parser.add_argument("--warmup", type=float, default=3.0)
     parser.add_argument("--output-root", default=None,
                         help="Override the profile output directory")
@@ -115,6 +117,8 @@ def parse_args():
     parser.add_argument("--calibration-model", default=None)
     parser.add_argument("--map-database", default=None)
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
+    parser.add_argument("--rotation-metric-pnp", action="store_true",
+                        help="Enable guarded stereo-PnP yaw for VO diagnostics")
     return parser.parse_args()
 
 
@@ -348,6 +352,7 @@ def main():
         "--warmup", str(args.warmup),
         "--speed", str(command_speed),
         "--angular", str(args.angular),
+        "--max-turn-angular", str(args.max_turn_angular),
         "--output", str(output),
         "--export-map",
     ]
@@ -355,6 +360,8 @@ def main():
         command.extend(["--reverse-after", str(reverse_after)])
     if args.record:
         command.append("--record-bag")
+    if args.rotation_metric_pnp:
+        command.append("--rotation-metric-pnp")
     if waypoint_route:
         command.extend(["--waypoint-route", str(waypoint_route)])
     if args.scene_manifest:
@@ -380,6 +387,8 @@ def main():
         "target_actual_speed_mps": profile.get("target_actual_speed_mps"),
         "speed_calibration": "experiments/speed_calibration_20260905.json",
         "angular_radps": args.angular,
+        "max_turn_angular_radps": args.max_turn_angular,
+        "rotation_metric_pnp": args.rotation_metric_pnp,
         "scene_model": "154 m maximum scene: 0-120 m evaluation route + approximately 30 m visual buffer",
     }
     if scene_manifest:

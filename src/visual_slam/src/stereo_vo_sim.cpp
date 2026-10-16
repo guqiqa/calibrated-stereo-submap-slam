@@ -117,11 +117,37 @@ public:
       "rotation_max_translation_m", 0.03);
     rotation_max_residual_px_ = declare_parameter<double>("rotation_max_residual_px", 1.5);
     rotation_scale_factor_ = declare_parameter<double>("rotation_scale_factor", 1.06);
+    rotation_wahba_max_residual_px_ = declare_parameter<double>(
+      "rotation_wahba_max_residual_px", 4.0);
+    rotation_wahba_min_inlier_ratio_ = declare_parameter<double>(
+      "rotation_wahba_min_inlier_ratio", 0.45);
+    rotation_wahba_positive_scale_ = declare_parameter<double>(
+      "rotation_wahba_positive_scale", 1.0);
+    rotation_wahba_negative_scale_ = declare_parameter<double>(
+      "rotation_wahba_negative_scale", 1.043);
+    rotation_metric_min_flow_px_ = declare_parameter<double>(
+      "rotation_metric_min_flow_px", 1.5);
+    rotation_metric_consistency_deg_ = declare_parameter<double>(
+      "rotation_metric_consistency_deg", 5.0);
+    rotation_metric_pnp_enabled_ = declare_parameter<bool>(
+      "rotation_metric_pnp_enabled", false);
+    rotation_anchor_min_matches_ = declare_parameter<int>(
+      "rotation_anchor_min_matches", 8);
+    rotation_anchor_min_inlier_ratio_ = declare_parameter<double>(
+      "rotation_anchor_min_inlier_ratio", 0.45);
+    rotation_anchor_max_angle_deg_ = declare_parameter<double>(
+      "rotation_anchor_max_angle_deg", 180.0);
+    rotation_anchor_match_distance_ = declare_parameter<int>(
+      "rotation_anchor_match_distance", 80);
+    rotation_anchor_match_ratio_ = declare_parameter<double>(
+      "rotation_anchor_match_ratio", 0.88);
     rotation_settle_deg_ = declare_parameter<double>("rotation_settle_deg", 0.20);
     rotation_settle_flow_px_ = declare_parameter<double>("rotation_settle_flow_px", 0.75);
     rotation_settle_frames_ = declare_parameter<int>("rotation_settle_frames", 3);
     rebootstrap_validation_frames_ = declare_parameter<int>(
       "rebootstrap_validation_frames", 4);
+    rotation_wait_rebootstrap_frames_ = declare_parameter<int>(
+      "rotation_wait_rebootstrap_frames", 5);
     min_pnp_inliers_ = declare_parameter<int>("min_pnp_inliers", 10);
     max_depth_m_ = declare_parameter<double>("max_depth_m", 25.0);
     min_3d3d_inliers_ = declare_parameter<int>("min_3d3d_inliers", 10);
@@ -141,6 +167,10 @@ public:
       "stereo_translation_scale_factor", 1.08);
     loop_closure_enabled_ = declare_parameter<bool>("loop_closure_enabled", true);
     loop_closure_apply_correction_ = declare_parameter<bool>("loop_closure_apply_correction", false);
+    rotation_relocalization_mode_ = declare_parameter<std::string>(
+      "rotation_relocalization_mode", "pure_stereo");
+    rotation_relocalization_max_pose_jump_m_ = declare_parameter<double>(
+      "rotation_relocalization_max_pose_jump_m", 2.0);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -187,6 +217,15 @@ public:
     if (online_submap_id_mode_ != "distance" && online_submap_id_mode_ != "scene") {
       throw std::runtime_error("online_submap_id_mode must be distance or scene");
     }
+    if (rotation_relocalization_mode_ != "pure_stereo" &&
+      rotation_relocalization_mode_ != "stereo_relocalization")
+    {
+      throw std::runtime_error(
+        "rotation_relocalization_mode must be pure_stereo or stereo_relocalization");
+    }
+    if (rotation_relocalization_max_pose_jump_m_ <= 0.0) {
+      throw std::runtime_error("rotation_relocalization_max_pose_jump_m must be positive");
+    }
     if (online_submap_id_mode_ == "scene") {
       load_scene_submaps();
     }
@@ -228,6 +267,18 @@ public:
     }
     if (min_disparity_ <= 0.0 || min_3d3d_inliers_ < 3 || max_3d3d_residual_m_ <= 0.0 ||
       motion_translation_tolerance_m_ <= 0.0 || motion_rotation_tolerance_deg_ <= 0.0 ||
+      rotation_wahba_max_residual_px_ <= 0.0 ||
+      rotation_wahba_min_inlier_ratio_ <= 0.0 ||
+      rotation_wahba_min_inlier_ratio_ > 1.0 ||
+      rotation_wahba_positive_scale_ <= 0.0 || rotation_wahba_negative_scale_ <= 0.0 ||
+      rotation_metric_min_flow_px_ <= 0.0 || rotation_metric_consistency_deg_ <= 0.0 ||
+      rotation_anchor_min_matches_ < 6 || rotation_anchor_min_inlier_ratio_ <= 0.0 ||
+      rotation_anchor_min_inlier_ratio_ > 1.0 || rotation_anchor_max_angle_deg_ <= 0.0 ||
+      rotation_anchor_match_distance_ <= 0 || rotation_anchor_match_ratio_ <= 0.0 ||
+      rotation_anchor_match_ratio_ >= 1.0 ||
+      rotation_settle_deg_ <= 0.0 || rotation_settle_flow_px_ <= 0.0 ||
+      rotation_settle_frames_ < 1 ||
+      rotation_wait_rebootstrap_frames_ < 1 ||
       stable_map_min_observations_ < 1 || motion_reference_frames_ < 2 ||
       motion_reference_translation_m_ <= 0.0 || loop_check_period_frames_ < 1 ||
       loop_min_keyframe_gap_ < 1 || loop_min_matches_ < 6 || loop_min_inliers_ < 6 ||
@@ -285,6 +336,7 @@ private:
   {
     cv::Mat left_image;
     std::vector<cv::KeyPoint> temporal_keypoints;
+    cv::Mat temporal_descriptors;
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat descriptors;
     std::vector<cv::Point3f> points3d;
@@ -656,6 +708,9 @@ private:
     calibration_ready_ = true;
     metric_keyframe_.reset();
     temporal_reference_.reset();
+    rotation_anchor_.reset();
+    rotation_anchor_world_pose_.release();
+    rotation_anchor_gap_frames_ = 0;
     world_T_current_ = cv::Mat::eye(4, 4, CV_64F);
     reference_world_pose_ = world_T_current_.clone();
     temporal_reference_world_pose_ = world_T_current_.clone();
@@ -730,6 +785,90 @@ private:
     return cv::norm(vector) * 180.0 / CV_PI;
   }
 
+  static double wrap_angle_deg(double angle)
+  {
+    while (angle > 180.0) angle -= 360.0;
+    while (angle < -180.0) angle += 360.0;
+    return angle;
+  }
+
+  bool estimate_temporal_metric_rotation(
+    const Frame & previous, const Frame & current, cv::Mat & transform,
+    int & inliers, double & yaw_deg) const
+  {
+    transform.release();
+    inliers = 0;
+    yaw_deg = 0.0;
+    if (previous.keypoints.size() != previous.points3d.size() ||
+      previous.points3d.size() < static_cast<std::size_t>(min_pnp_inliers_))
+    {
+      return false;
+    }
+    std::vector<cv::Point2f> previous_pixels;
+    previous_pixels.reserve(previous.keypoints.size());
+    for (const auto & keypoint : previous.keypoints) {
+      previous_pixels.push_back(keypoint.pt);
+    }
+    std::vector<cv::Point2f> tracked_pixels, backward_pixels;
+    std::vector<unsigned char> forward_status, backward_status;
+    std::vector<float> forward_error, backward_error;
+    cv::calcOpticalFlowPyrLK(previous.left_image, current.left_image, previous_pixels,
+      tracked_pixels, forward_status, forward_error, cv::Size(31, 31), 4);
+    cv::calcOpticalFlowPyrLK(current.left_image, previous.left_image, tracked_pixels,
+      backward_pixels, backward_status, backward_error, cv::Size(31, 31), 4);
+    std::vector<cv::Point3f> object_points;
+    std::vector<cv::Point2f> image_points;
+    std::set<int> used_current_indices;
+    for (std::size_t index = 0; index < previous_pixels.size(); ++index) {
+      if (!forward_status[index] || !backward_status[index] ||
+        cv::norm(previous_pixels[index] - backward_pixels[index]) > 1.0 ||
+        tracked_pixels[index].x < 1.0F || tracked_pixels[index].y < 1.0F ||
+        tracked_pixels[index].x >= current.left_image.cols - 1.0F ||
+        tracked_pixels[index].y >= current.left_image.rows - 1.0F)
+      {
+        continue;
+      }
+      int nearest_index = -1;
+      double nearest_distance = 2.0;
+      for (std::size_t current_index = 0; current_index < current.keypoints.size(); ++current_index) {
+        const double distance = cv::norm(current.keypoints[current_index].pt - tracked_pixels[index]);
+        if (distance < nearest_distance) {
+          nearest_distance = distance;
+          nearest_index = static_cast<int>(current_index);
+        }
+      }
+      if (nearest_index < 0 || !used_current_indices.insert(nearest_index).second) {
+        continue;
+      }
+      object_points.push_back(previous.points3d[index]);
+      image_points.push_back(tracked_pixels[index]);
+    }
+    if (object_points.size() < static_cast<std::size_t>(min_pnp_inliers_)) {
+      return false;
+    }
+    cv::Mat rotation_vector, translation_vector, pnp_inliers;
+    if (!cv::solvePnPRansac(object_points, image_points, rectified_k_, cv::Mat(),
+      rotation_vector, translation_vector, false, 100, 2.0, 0.99, pnp_inliers,
+      cv::SOLVEPNP_ITERATIVE))
+    {
+      return false;
+    }
+    inliers = pnp_inliers.rows;
+    if (inliers < min_pnp_inliers_) {
+      return false;
+    }
+    cv::Mat rotation;
+    cv::Rodrigues(rotation_vector, rotation);
+    cv::Mat pnp_transform = cv::Mat::eye(4, 4, CV_64F);
+    rotation.copyTo(pnp_transform(cv::Rect(0, 0, 3, 3)));
+    translation_vector.copyTo(pnp_transform(cv::Rect(3, 0, 1, 3)));
+    // solvePnP returns current_camera_T_previous_camera. The temporal rotation
+    // accumulator consumes the opposite convention used by the bearing path.
+    transform = pnp_transform.inv();
+    yaw_deg = std::atan2(transform.at<double>(0, 2), transform.at<double>(2, 2)) * 180.0 / CV_PI;
+    return std::isfinite(yaw_deg);
+  }
+
   bool estimate_temporal_rotation(
     const Frame & previous, const Frame & current, cv::Mat & rotation,
     int & inliers, double & angle_deg, int & tracked_matches,
@@ -754,9 +893,9 @@ private:
     std::vector<unsigned char> forward_status, backward_status;
     std::vector<float> forward_error, backward_error;
     cv::calcOpticalFlowPyrLK(previous.left_image, current.left_image, previous_pixels,
-      current_pixels, forward_status, forward_error, cv::Size(21, 21), 3);
+      current_pixels, forward_status, forward_error, cv::Size(31, 31), 4);
     cv::calcOpticalFlowPyrLK(current.left_image, previous.left_image, current_pixels,
-      backward_pixels, backward_status, backward_error, cv::Size(21, 21), 3);
+      backward_pixels, backward_status, backward_error, cv::Size(31, 31), 4);
     std::vector<cv::Point2f> accepted_previous, accepted_current;
     for (std::size_t index = 0; index < previous_pixels.size(); ++index) {
       if (!forward_status[index] || !backward_status[index] ||
@@ -800,7 +939,7 @@ private:
     // Image bearings move opposite to the camera pose yaw. The fixed scale is
     // calibrated once on development data and never reads online truth.
     const double image_bearing_delta = *bearing_middle;
-    const double yaw_delta = -image_bearing_delta * rotation_scale_factor_;
+    const double bearing_yaw_delta = -image_bearing_delta * rotation_scale_factor_;
     std::vector<double> residuals;
     residuals.reserve(bearing_deltas.size());
     inliers = 0;
@@ -817,19 +956,114 @@ private:
     const auto residual_middle = residuals.begin() + residuals.size() / 2U;
     std::nth_element(residuals.begin(), residual_middle, residuals.end());
     rotation_residual_px = *residual_middle;
-    const double cosine = std::cos(yaw_delta);
-    const double sine = std::sin(yaw_delta);
-    rotation = (cv::Mat_<double>(3, 3) <<
-      cosine, 0.0, sine,
-      0.0, 1.0, 0.0,
-      -sine, 0.0, cosine);
-    angle_deg = std::abs(yaw_delta) * 180.0 / CV_PI;
+    int wahba_inliers = 0;
+    double wahba_rmse_px = std::numeric_limits<double>::infinity();
+    const cv::Mat wahba_rotation = visual_slam::bearing_correspondences_to_planar_rotation(
+      accepted_previous, accepted_current, rectified_k_, rotation_wahba_max_residual_px_,
+      rotation_min_matches_, wahba_inliers, wahba_rmse_px);
+    const double wahba_inlier_ratio = accepted_previous.empty() ? 0.0 :
+      static_cast<double>(wahba_inliers) / static_cast<double>(accepted_previous.size());
+    double yaw_delta = bearing_yaw_delta;
+    last_rotation_estimator_ = "bearing_fallback";
+    if (!wahba_rotation.empty() && wahba_inlier_ratio >= rotation_wahba_min_inlier_ratio_) {
+      yaw_delta = std::atan2(
+        wahba_rotation.at<double>(0, 2), wahba_rotation.at<double>(2, 2));
+      yaw_delta *= yaw_delta >= 0.0 ?
+        rotation_wahba_positive_scale_ : rotation_wahba_negative_scale_;
+      const double cosine = std::cos(yaw_delta);
+      const double sine = std::sin(yaw_delta);
+      rotation = (cv::Mat_<double>(3, 3) <<
+        cosine, 0.0, sine,
+        0.0, 1.0, 0.0,
+        -sine, 0.0, cosine);
+      inliers = wahba_inliers;
+      rotation_residual_px = wahba_rmse_px;
+      last_rotation_estimator_ = "bearing_wahba";
+    } else {
+      const double cosine = std::cos(yaw_delta);
+      const double sine = std::sin(yaw_delta);
+      rotation = (cv::Mat_<double>(3, 3) <<
+        cosine, 0.0, sine,
+        0.0, 1.0, 0.0,
+        -sine, 0.0, cosine);
+    }
+    last_rotation_2d_signed_deg_ = yaw_delta * 180.0 / CV_PI;
+    angle_deg = std::abs(last_rotation_2d_signed_deg_);
     return std::isfinite(angle_deg) && std::isfinite(rotation_residual_px);
+  }
+
+  bool estimate_descriptor_rotation(
+    const Frame & previous, const Frame & current, cv::Mat & rotation,
+    int & raw_matches, int & inliers, double & angle_deg, double & residual_px) const
+  {
+    rotation.release();
+    raw_matches = 0;
+    inliers = 0;
+    angle_deg = 0.0;
+    residual_px = std::numeric_limits<double>::infinity();
+    if (previous.temporal_descriptors.empty() || current.temporal_descriptors.empty() ||
+      previous.temporal_descriptors.rows != static_cast<int>(previous.temporal_keypoints.size()) ||
+      current.temporal_descriptors.rows != static_cast<int>(current.temporal_keypoints.size()))
+    {
+      return false;
+    }
+    std::vector<std::vector<cv::DMatch>> candidates;
+    matcher_->knnMatch(previous.temporal_descriptors, current.temporal_descriptors, candidates, 2);
+    std::vector<cv::Point2f> previous_pixels;
+    std::vector<cv::Point2f> current_pixels;
+    std::set<int> used_current_indices;
+    for (const auto & candidate : candidates) {
+      if (candidate.size() != 2 ||
+        candidate[0].distance >= static_cast<float>(rotation_anchor_match_ratio_) * candidate[1].distance ||
+        candidate[0].distance > rotation_anchor_match_distance_)
+      {
+        continue;
+      }
+      const int previous_index = candidate[0].queryIdx;
+      const int current_index = candidate[0].trainIdx;
+      if (previous_index < 0 || previous_index >= static_cast<int>(previous.temporal_keypoints.size()) ||
+        current_index < 0 || current_index >= static_cast<int>(current.temporal_keypoints.size()) ||
+        !used_current_indices.insert(current_index).second)
+      {
+        continue;
+      }
+      previous_pixels.push_back(previous.temporal_keypoints[previous_index].pt);
+      current_pixels.push_back(current.temporal_keypoints[current_index].pt);
+    }
+    raw_matches = static_cast<int>(previous_pixels.size());
+    if (raw_matches < rotation_anchor_min_matches_) {
+      return false;
+    }
+    int wahba_inliers = 0;
+    double wahba_rmse_px = std::numeric_limits<double>::infinity();
+    rotation = visual_slam::bearing_correspondences_to_planar_rotation(
+      previous_pixels, current_pixels, rectified_k_, rotation_wahba_max_residual_px_,
+      rotation_anchor_min_matches_, wahba_inliers, wahba_rmse_px);
+    if (rotation.empty() || wahba_inliers < rotation_anchor_min_matches_) {
+      return false;
+    }
+    inliers = wahba_inliers;
+    residual_px = wahba_rmse_px;
+    const double inlier_ratio = static_cast<double>(inliers) /
+      static_cast<double>(std::max(1, raw_matches));
+    const double yaw = std::atan2(rotation.at<double>(0, 2), rotation.at<double>(2, 2));
+    angle_deg = std::abs(yaw) * 180.0 / CV_PI;
+    return inliers >= rotation_anchor_min_matches_ &&
+           inlier_ratio >= rotation_anchor_min_inlier_ratio_ &&
+           angle_deg <= rotation_anchor_max_angle_deg_ &&
+           std::isfinite(residual_px) && std::isfinite(angle_deg);
   }
 
   static double json_number(double value)
   {
     return std::isfinite(value) ? value : -1.0;
+  }
+
+  void set_rotation_anchor(const Frame & frame, const cv::Mat & world_pose)
+  {
+    rotation_anchor_ = frame;
+    rotation_anchor_world_pose_ = world_pose.clone();
+    rotation_anchor_gap_frames_ = 0;
   }
 
   static bool rigid_transform(const std::vector<cv::Point3f> & source,
@@ -1887,6 +2121,7 @@ private:
     Frame frame;
     frame.left_image = left_rectified;
     frame.temporal_keypoints = left_keypoints;
+    frame.temporal_descriptors = left_descriptors;
     if (left_descriptors.empty() || right_descriptors.empty()) {
       return frame;
     }
@@ -1991,6 +2226,30 @@ private:
     last_frame_min_depth_ = current.min_depth;
     last_frame_median_depth_ = current.median_depth;
     last_frame_reprojection_rmse_ = current.stereo_reprojection_rmse;
+    last_rotation_2d_signed_deg_ = 0.0;
+    last_rotation_estimator_ = "unavailable";
+    last_rotation_anchor_used_ = false;
+    last_rotation_anchor_matches_ = 0;
+    last_rotation_anchor_inliers_ = 0;
+    last_rotation_anchor_yaw_deg_ = 0.0;
+    last_rotation_anchor_gap_frames_ = 0;
+    last_rotation_descriptor_matches_ = 0;
+    last_rotation_descriptor_inliers_ = 0;
+    last_rotation_descriptor_yaw_deg_ = 0.0;
+    last_rotation_descriptor_used_ = false;
+    last_rotation_quality_ = 0.0;
+    last_rotation_observation_ = "unavailable";
+    last_rotation_reject_reason_.clear();
+    last_temporal_reference_updated_ = false;
+    last_rotation_anchor_updated_ = false;
+    last_relocalization_attempted_ = false;
+    last_relocalization_accepted_ = false;
+    last_relocalization_keyframe_id_ = -1;
+    last_relocalization_matches_ = 0;
+    last_relocalization_inliers_ = 0;
+    last_relocalization_reprojection_rmse_ = std::numeric_limits<double>::infinity();
+    last_relocalization_pose_jump_m_ = std::numeric_limits<double>::infinity();
+    last_relocalization_reject_reason_.clear();
     cv::Mat temporal_rotation;
     int temporal_rotation_inliers = 0;
     int temporal_matches = 0;
@@ -2001,26 +2260,190 @@ private:
       *temporal_reference_, current, temporal_rotation, temporal_rotation_inliers,
       temporal_rotation_deg, temporal_matches, temporal_flow_px,
       temporal_rotation_residual_px);
+    cv::Mat temporal_metric_transform;
+    int temporal_metric_inliers = 0;
+    double temporal_metric_yaw_deg = 0.0;
+    const bool temporal_metric_rotation_ok = rotation_metric_pnp_enabled_ && temporal_reference_ &&
+      estimate_temporal_metric_rotation(*temporal_reference_, current,
+      temporal_metric_transform, temporal_metric_inliers, temporal_metric_yaw_deg);
+    last_temporal_metric_inliers_ = temporal_metric_inliers;
+    last_temporal_metric_yaw_deg_ = temporal_metric_yaw_deg;
+    const double temporal_metric_yaw_difference = temporal_metric_rotation_ok ?
+      std::abs(wrap_angle_deg(temporal_metric_yaw_deg - last_rotation_2d_signed_deg_)) :
+      std::numeric_limits<double>::infinity();
+    const bool in_rotation_recovery =
+      recovery_state_ == "rotation_only" || recovery_state_ == "rotation_gap_hold";
+    const bool use_temporal_metric_rotation = rotation_metric_pnp_enabled_ &&
+      in_rotation_recovery &&
+      temporal_rotation_ok && temporal_metric_rotation_ok &&
+      std::abs(temporal_metric_yaw_deg) >= rotation_min_deg_ &&
+      std::abs(temporal_metric_yaw_deg) <= max_relative_rotation_deg_ &&
+      pose_translation(temporal_metric_transform) <= rotation_max_translation_m_ &&
+      std::isfinite(temporal_flow_px) && temporal_flow_px >= rotation_metric_min_flow_px_ &&
+      temporal_metric_yaw_difference <= rotation_metric_consistency_deg_;
+    if (use_temporal_metric_rotation) {
+      temporal_rotation = temporal_metric_transform(cv::Rect(0, 0, 3, 3)).clone();
+      temporal_rotation_deg = std::abs(temporal_metric_yaw_deg);
+      temporal_rotation_inliers = temporal_metric_inliers;
+      temporal_rotation_residual_px = 0.0;
+    }
+
+    bool use_descriptor_temporal_rotation = false;
+    int descriptor_temporal_matches = 0;
+    int descriptor_temporal_inliers = 0;
+    double descriptor_temporal_yaw_deg = 0.0;
+    double descriptor_temporal_residual_px = std::numeric_limits<double>::infinity();
+    if (in_rotation_recovery && temporal_reference_ &&
+      (!temporal_rotation_ok || temporal_rotation_residual_px > rotation_max_residual_px_))
+    {
+      cv::Mat descriptor_rotation;
+      const bool descriptor_rotation_ok = estimate_descriptor_rotation(
+        *temporal_reference_, current, descriptor_rotation, descriptor_temporal_matches,
+        descriptor_temporal_inliers, descriptor_temporal_yaw_deg,
+        descriptor_temporal_residual_px);
+      if (descriptor_rotation_ok) {
+        const double raw_descriptor_yaw = std::atan2(
+          descriptor_rotation.at<double>(0, 2), descriptor_rotation.at<double>(2, 2));
+        const double calibrated_descriptor_yaw = raw_descriptor_yaw * (raw_descriptor_yaw >= 0.0 ?
+          rotation_wahba_positive_scale_ : rotation_wahba_negative_scale_);
+        const double cosine = std::cos(calibrated_descriptor_yaw);
+        const double sine = std::sin(calibrated_descriptor_yaw);
+        temporal_rotation = (cv::Mat_<double>(3, 3) <<
+          cosine, 0.0, sine,
+          0.0, 1.0, 0.0,
+          -sine, 0.0, cosine);
+        temporal_rotation_deg = std::abs(calibrated_descriptor_yaw) * 180.0 / CV_PI;
+        temporal_rotation_inliers = descriptor_temporal_inliers;
+        temporal_rotation_residual_px = descriptor_temporal_residual_px;
+        last_rotation_2d_signed_deg_ = calibrated_descriptor_yaw * 180.0 / CV_PI;
+        last_rotation_estimator_ = "orb_temporal_wahba";
+        use_descriptor_temporal_rotation = true;
+        // A descriptor bridge closes the local gap; the long-range anchor is
+        // only needed while neither adjacent-frame estimator is usable.
+        rotation_anchor_gap_frames_ = 0;
+      }
+    }
+
+    cv::Mat anchor_rotation;
+    int anchor_matches = 0;
+    int anchor_inliers = 0;
+    double anchor_yaw_deg = 0.0;
+    double anchor_residual_px = std::numeric_limits<double>::infinity();
+    bool use_anchor_rotation = false;
+    if (in_rotation_recovery && rotation_anchor_) {
+      const bool temporal_rotation_trusted =
+        (temporal_rotation_ok && temporal_rotation_residual_px <= rotation_max_residual_px_) ||
+        (use_descriptor_temporal_rotation &&
+        temporal_rotation_residual_px <= rotation_wahba_max_residual_px_);
+      if (!temporal_rotation_trusted) {
+        ++rotation_anchor_gap_frames_;
+      }
+      if (rotation_anchor_gap_frames_ > 0) {
+        const bool anchor_rotation_ok = estimate_descriptor_rotation(
+          *rotation_anchor_, current, anchor_rotation, anchor_matches, anchor_inliers,
+          anchor_yaw_deg, anchor_residual_px);
+        if (anchor_rotation_ok) {
+          temporal_rotation = anchor_rotation;
+          temporal_rotation_deg = anchor_yaw_deg;
+          temporal_rotation_inliers = anchor_inliers;
+          temporal_rotation_residual_px = anchor_residual_px;
+          use_anchor_rotation = true;
+          last_rotation_estimator_ = "orb_anchor_pnp_wahba";
+          const double raw_anchor_yaw = std::atan2(
+            anchor_rotation.at<double>(0, 2), anchor_rotation.at<double>(2, 2));
+          const double calibrated_anchor_yaw = raw_anchor_yaw * (raw_anchor_yaw >= 0.0 ?
+            rotation_wahba_positive_scale_ : rotation_wahba_negative_scale_);
+          const double cosine = std::cos(calibrated_anchor_yaw);
+          const double sine = std::sin(calibrated_anchor_yaw);
+          temporal_rotation = (cv::Mat_<double>(3, 3) <<
+            cosine, 0.0, sine,
+            0.0, 1.0, 0.0,
+            -sine, 0.0, cosine);
+          temporal_rotation_deg = std::abs(calibrated_anchor_yaw) * 180.0 / CV_PI;
+          last_rotation_2d_signed_deg_ = calibrated_anchor_yaw * 180.0 / CV_PI;
+        }
+      }
+    }
+    last_rotation_anchor_used_ = use_anchor_rotation;
+    last_rotation_anchor_matches_ = anchor_matches;
+    last_rotation_anchor_inliers_ = anchor_inliers;
+    last_rotation_anchor_yaw_deg_ = use_anchor_rotation ? last_rotation_2d_signed_deg_ : 0.0;
+    last_rotation_anchor_gap_frames_ = use_anchor_rotation ?
+      rotation_anchor_gap_frames_ : 0;
+    last_rotation_descriptor_matches_ = descriptor_temporal_matches;
+    last_rotation_descriptor_inliers_ = descriptor_temporal_inliers;
+    last_rotation_descriptor_yaw_deg_ = use_descriptor_temporal_rotation && !use_anchor_rotation ?
+      last_rotation_2d_signed_deg_ : 0.0;
+    last_rotation_descriptor_used_ = use_descriptor_temporal_rotation && !use_anchor_rotation;
     last_rotation_2d_inliers_ = temporal_rotation_inliers;
     last_rotation_2d_deg_ = temporal_rotation_deg;
     last_temporal_matches_ = temporal_matches;
     last_temporal_flow_px_ = temporal_flow_px;
     last_rotation_2d_residual_px_ = temporal_rotation_residual_px;
-    const bool pure_rotation_model = temporal_rotation_ok &&
-      temporal_rotation_residual_px <= rotation_max_residual_px_;
-    const auto apply_temporal_rotation = [&]() {
+    const double rotation_inlier_ratio = temporal_matches > 0 ?
+      static_cast<double>(temporal_rotation_inliers) / static_cast<double>(temporal_matches) : 0.0;
+    const double residual_quality = std::isfinite(temporal_rotation_residual_px) ?
+      std::max(0.0, 1.0 - temporal_rotation_residual_px / rotation_wahba_max_residual_px_) : 0.0;
+    last_rotation_quality_ = std::clamp(
+      0.45 * std::min(1.0, static_cast<double>(temporal_rotation_inliers) /
+        static_cast<double>(std::max(1, rotation_min_matches_))) +
+      0.35 * std::clamp(rotation_inlier_ratio, 0.0, 1.0) +
+      0.20 * residual_quality, 0.0, 1.0);
+    if (use_anchor_rotation) {
+      last_rotation_observation_ = "anchor";
+    } else if (use_descriptor_temporal_rotation) {
+      last_rotation_observation_ = "temporal_descriptor";
+    } else if (use_temporal_metric_rotation) {
+      last_rotation_observation_ = "temporal_metric";
+    } else if (temporal_rotation_ok) {
+      last_rotation_observation_ = "temporal_2d";
+    }
+    const bool pure_rotation_model =
+      ((temporal_rotation_ok || use_temporal_metric_rotation) &&
+      temporal_rotation_residual_px <= rotation_max_residual_px_) ||
+      ((use_anchor_rotation || use_descriptor_temporal_rotation) &&
+      temporal_rotation_residual_px <= rotation_wahba_max_residual_px_);
+    last_temporal_rotation_ok_ = temporal_rotation_ok || use_temporal_metric_rotation ||
+      use_descriptor_temporal_rotation;
+    last_pure_rotation_model_ = pure_rotation_model;
+    last_rotation_decision_ = "not_in_rotation_state";
+    const auto apply_temporal_rotation = [&](const cv::Mat & source_world_pose) {
         cv::Mat current_T_temporal = cv::Mat::eye(4, 4, CV_64F);
         temporal_rotation.copyTo(current_T_temporal(cv::Rect(0, 0, 3, 3)));
-        world_T_current_ = temporal_reference_world_pose_ * current_T_temporal.inv();
+        const cv::Mat pose_increment = current_T_temporal.inv();
+        const double applied_yaw_deg = std::atan2(
+          pose_increment.at<double>(0, 2), pose_increment.at<double>(2, 2)) * 180.0 / CV_PI;
+        if (!in_rotation_recovery) {
+          rotation_episode_yaw_deg_ = 0.0;
+        }
+        world_T_current_ = visual_slam::compose_world_pose_from_current_T_previous(
+          source_world_pose, current_T_temporal);
         if (planar_motion_constraint_) {
           world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
         }
         temporal_reference_ = current;
         temporal_reference_world_pose_ = world_T_current_.clone();
+        set_rotation_anchor(current, world_T_current_);
+        last_temporal_reference_updated_ = true;
+        last_rotation_anchor_updated_ = true;
+        if (use_anchor_rotation) {
+          ++rotation_anchor_recovery_count_;
+        }
         recovery_state_ = "rotation_only";
         map_updates_enabled_ = false;
         rotation_settle_count_ = 0;
-        motion_source_ = "visual_rotation_2d";
+        rotation_wait_count_ = 0;
+        motion_source_ = use_anchor_rotation ? "visual_rotation_anchor_recovery" :
+          (use_descriptor_temporal_rotation ? "visual_rotation_descriptor" : "visual_rotation_2d");
+        yaw_update_source_ = use_anchor_rotation ? "orb_anchor_wahba" :
+          (use_descriptor_temporal_rotation ? "orb_temporal_wahba" :
+          (use_temporal_metric_rotation ? "temporal_metric_pnp" : last_rotation_estimator_));
+        last_rotation_decision_ = use_anchor_rotation ? "accepted_anchor_rotation" :
+          (use_descriptor_temporal_rotation ? "accepted_descriptor_rotation" :
+          "accepted_rotation_increment");
+        rotation_episode_yaw_deg_ += applied_yaw_deg;
+        rotation_total_yaw_deg_ += applied_yaw_deg;
+        ++rotation_updates_total_;
         last_relative_translation_ = {0.0, 0.0, 0.0};
         ++tracked_pairs_;
         consecutive_tracking_failures_ = 0;
@@ -2030,30 +2453,103 @@ private:
         publish_status("rotation_only", stereo_points, temporal_matches, 0,
           pair_delta_ms, elapsed_ms(started));
       };
-    if (recovery_state_ == "rotation_only") {
-      if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
-        apply_temporal_rotation();
+    if (in_rotation_recovery) {
+      const bool anchor_gap_unresolved = rotation_anchor_gap_frames_ > 0 && !use_anchor_rotation;
+      const bool local_gap_fallback = anchor_gap_unresolved &&
+        rotation_wait_count_ >= rotation_wait_rebootstrap_frames_ &&
+        (temporal_rotation_ok || use_descriptor_temporal_rotation);
+      const bool meaningful_rotation = pure_rotation_model &&
+        (!anchor_gap_unresolved || local_gap_fallback) &&
+        (temporal_rotation_deg >= rotation_settle_deg_ ||
+        (std::isfinite(temporal_flow_px) && temporal_flow_px > rotation_settle_flow_px_ &&
+        temporal_rotation_deg >= 0.05));
+      if (meaningful_rotation) {
+        if (local_gap_fallback) {
+          last_rotation_decision_ = "local_rotation_fallback_after_anchor_gap";
+          last_rotation_estimator_ = "temporal_after_anchor_gap";
+        }
+        const cv::Mat source_pose = use_anchor_rotation ? rotation_anchor_world_pose_ :
+          temporal_reference_world_pose_;
+        apply_temporal_rotation(source_pose);
         return;
       }
-      const bool settled = temporal_matches >= rotation_min_matches_ &&
-        std::isfinite(temporal_flow_px) && temporal_flow_px <= rotation_settle_flow_px_;
+      const bool settled = !anchor_gap_unresolved && temporal_matches >= rotation_min_matches_ &&
+        std::isfinite(temporal_flow_px) && temporal_flow_px <= rotation_settle_flow_px_ &&
+        (!pure_rotation_model || temporal_rotation_deg <= rotation_settle_deg_);
       rotation_settle_count_ = settled ? rotation_settle_count_ + 1 : 0;
-      temporal_reference_ = current;
-      temporal_reference_world_pose_ = world_T_current_.clone();
+      if (settled) {
+        rotation_wait_count_ = 0;
+        last_rotation_decision_ = "rotation_settling";
+      } else {
+        ++rotation_wait_count_;
+        ++rotation_wait_frames_total_;
+        if ((!temporal_rotation_ok && !use_descriptor_temporal_rotation) ||
+          (temporal_matches < rotation_min_matches_ && !use_descriptor_temporal_rotation)) {
+          ++rotation_estimation_failure_frames_;
+          last_rotation_decision_ = "temporal_match_failure";
+        } else if (anchor_gap_unresolved) {
+          last_rotation_decision_ = "anchor_recovery_pending";
+        } else if (!pure_rotation_model) {
+          ++rotation_residual_rejection_frames_;
+          last_rotation_decision_ = "rotation_residual_rejected";
+        } else {
+          ++rotation_subthreshold_frames_;
+          last_rotation_decision_ = "accumulating_subthreshold_rotation";
+        }
+      }
       if (rotation_settle_count_ >= rotation_settle_frames_ &&
         stereo_points >= recovery_stereo_points_)
       {
+        if (rotation_relocalization_mode_ == "stereo_relocalization") {
+          last_relocalization_attempted_ = true;
+          const LoopClosure relocalization = detect_loop_closure(current);
+          last_relocalization_keyframe_id_ = relocalization.keyframe_id;
+          last_relocalization_matches_ = relocalization.matches;
+          last_relocalization_inliers_ = relocalization.inliers;
+          last_relocalization_reprojection_rmse_ = relocalization.reprojection_rmse;
+          if (relocalization.accepted && !relocalization.corrected_pose.empty()) {
+            last_relocalization_pose_jump_m_ = pose_distance(
+              relocalization.corrected_pose, world_T_current_);
+            if (last_relocalization_pose_jump_m_ <= rotation_relocalization_max_pose_jump_m_) {
+              world_T_current_ = relocalization.corrected_pose.clone();
+              if (planar_motion_constraint_) {
+                world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(
+                  world_T_current_);
+              }
+              last_relocalization_accepted_ = true;
+              last_rotation_decision_ = "accepted_visual_relocalization";
+            } else {
+              last_relocalization_reject_reason_ = "pose_jump_out_of_range";
+            }
+          } else {
+            last_relocalization_reject_reason_ = "pnp_geometry_rejected";
+          }
+        }
         metric_keyframe_ = current;
+        temporal_reference_ = current;
+        set_rotation_anchor(current, world_T_current_);
         reference_world_pose_ = world_T_current_.clone();
+        temporal_reference_world_pose_ = world_T_current_.clone();
         reference_age_ = 0;
         committed_distance_ = trajectory_distance_;
         validation_success_frames_ = 0;
+        rotation_last_episode_yaw_deg_ = rotation_episode_yaw_deg_;
+        rotation_episode_yaw_deg_ = 0.0;
         recovery_state_ = "validating";
         motion_source_ = "stereo_rebootstrap";
+        last_rotation_decision_ = "rebootstrap_after_settling";
         rotation_settle_count_ = 0;
+        rotation_wait_count_ = 0;
+        ++rotation_rebootstrap_count_;
         publish_status("rebootstrap", stereo_points, temporal_matches, 0,
           pair_delta_ms, elapsed_ms(started));
       } else {
+        if (rotation_wait_count_ > 0 && !settled) {
+          recovery_state_ = "rotation_gap_hold";
+          if (last_rotation_observation_ == "unavailable") {
+            last_rotation_reject_reason_ = "rotation_observation_unavailable";
+          }
+        }
         publish_status(settled ? "rotation_settling" : "rotation_waiting",
           stereo_points, temporal_matches, 0, pair_delta_ms, elapsed_ms(started));
       }
@@ -2061,13 +2557,13 @@ private:
     }
     if (stereo_points < min_tracking_stereo_points_) {
       if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
-        apply_temporal_rotation();
+        apply_temporal_rotation(temporal_reference_world_pose_);
         return;
       }
       ++tracking_failures_;
       ++consecutive_tracking_failures_;
-      temporal_reference_ = current;
-      temporal_reference_world_pose_ = world_T_current_.clone();
+      // Failed frames must not move the temporal reference: doing so erases
+      // the motion gap that rotation recovery is meant to bridge.
       maybe_refresh_reference(current, stereo_points, 0, pair_delta_ms, started,
         "insufficient_stereo_features");
       publish_status("insufficient_stereo_features", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
@@ -2076,6 +2572,7 @@ private:
     if (!metric_keyframe_) {
       metric_keyframe_ = current;
       temporal_reference_ = current;
+      set_rotation_anchor(current, world_T_current_);
       reference_world_pose_ = world_T_current_.clone();
       temporal_reference_world_pose_ = world_T_current_.clone();
       reference_age_ = 0;
@@ -2191,7 +2688,7 @@ private:
       (pose_translation(selected_transform) <= rotation_max_translation_m_ &&
       rotation_angle_deg(selected_transform) >= rotation_min_deg_));
     if (rotation_dominant) {
-      apply_temporal_rotation();
+      apply_temporal_rotation(temporal_reference_world_pose_);
       return;
     }
     if (selected_transform.empty()) {
@@ -2216,7 +2713,9 @@ private:
         inlier_count, pair_delta_ms, elapsed_ms(started));
       return;
     }
-    if (straight_motion_constraint_) {
+    if (straight_motion_constraint_ && !visual_slam::has_significant_planar_yaw(
+      selected_transform, rotation_min_deg_ * CV_PI / 180.0))
+    {
       selected_transform = visual_slam::constrain_optical_relative_motion_to_straight_ground(
         selected_transform);
     }
@@ -2229,10 +2728,12 @@ private:
     // The metric keyframe is held for a short reference window, so selected_transform
     // already represents current_T_reference and must not be multiplied by
     // estimates from earlier frames in the same window.
-    world_T_current_ = reference_world_pose_ * selected_transform.inv();
+    world_T_current_ = visual_slam::compose_world_pose_from_current_T_previous(
+      reference_world_pose_, selected_transform);
     if (planar_motion_constraint_) {
       world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
     }
+    yaw_update_source_ = "metric_transform";
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     evaluate_submaps(current);
@@ -2269,6 +2770,7 @@ private:
     }
     temporal_reference_ = current;
     temporal_reference_world_pose_ = world_T_current_.clone();
+    set_rotation_anchor(current, world_T_current_);
     if (recovery_state_ == "validating") {
       ++validation_success_frames_;
       if (validation_success_frames_ >= rebootstrap_validation_frames_) {
@@ -2303,6 +2805,7 @@ private:
     // valid estimate and no failed frame contributes keyframes or map points.
     metric_keyframe_ = current;
     temporal_reference_ = current;
+    set_rotation_anchor(current, world_T_current_);
     reference_world_pose_ = world_T_current_.clone();
     temporal_reference_world_pose_ = world_T_current_.clone();
     reference_age_ = 0;
@@ -2418,9 +2921,63 @@ private:
          << ",\"vo_recovery_state\":\"" << recovery_state_ << "\""
          << ",\"rotation_2d_inliers\":" << last_rotation_2d_inliers_
          << ",\"rotation_2d_deg\":" << last_rotation_2d_deg_
+         << ",\"rotation_2d_signed_deg\":" << last_rotation_2d_signed_deg_
+         << ",\"temporal_metric_inliers\":" << last_temporal_metric_inliers_
+         << ",\"temporal_metric_yaw_deg\":" << last_temporal_metric_yaw_deg_
+         << ",\"rotation_anchor_used\":" << (last_rotation_anchor_used_ ? "true" : "false")
+         << ",\"rotation_anchor_matches\":" << last_rotation_anchor_matches_
+         << ",\"rotation_anchor_inliers\":" << last_rotation_anchor_inliers_
+         << ",\"rotation_anchor_yaw_deg\":" << last_rotation_anchor_yaw_deg_
+         << ",\"rotation_anchor_gap_frames\":" << last_rotation_anchor_gap_frames_
+         << ",\"rotation_anchor_pending_frames\":" << rotation_anchor_gap_frames_
+         << ",\"rotation_anchor_recovery_count\":" << rotation_anchor_recovery_count_
+          << ",\"rotation_relocalization_mode\":\"" << rotation_relocalization_mode_ << "\""
+          << ",\"relocalization_attempted\":" <<
+       (last_relocalization_attempted_ ? "true" : "false")
+          << ",\"relocalization_source_keyframe\":" << last_relocalization_keyframe_id_
+          << ",\"relocalization_matches\":" << last_relocalization_matches_
+          << ",\"relocalization_inliers\":" << last_relocalization_inliers_
+          << ",\"relocalization_reprojection_error_px\":" <<
+       json_number(last_relocalization_reprojection_rmse_)
+          << ",\"relocalization_pose_jump_m\":" <<
+       json_number(last_relocalization_pose_jump_m_)
+          << ",\"relocalization_accepted\":" <<
+       (last_relocalization_accepted_ ? "true" : "false")
+          << ",\"relocalization_reject_reason\":\"" <<
+       last_relocalization_reject_reason_ << "\""
+         << ",\"rotation_descriptor_used\":" <<
+      (last_rotation_descriptor_used_ ? "true" : "false")
+         << ",\"rotation_descriptor_matches\":" << last_rotation_descriptor_matches_
+         << ",\"rotation_descriptor_inliers\":" << last_rotation_descriptor_inliers_
+         << ",\"rotation_descriptor_yaw_deg\":" << last_rotation_descriptor_yaw_deg_
+         << ",\"rotation_estimator\":\"" << last_rotation_estimator_ << "\""
+         << ",\"yaw_update_source\":\"" << yaw_update_source_ << "\""
          << ",\"temporal_matches_2d\":" << last_temporal_matches_
          << ",\"temporal_flow_px\":" << json_number(last_temporal_flow_px_)
          << ",\"rotation_2d_residual_px\":" << json_number(last_rotation_2d_residual_px_)
+          << ",\"rotation_quality\":" << last_rotation_quality_
+          << ",\"rotation_observation\":\"" << last_rotation_observation_ << "\""
+          << ",\"rotation_reject_reason\":\"" << last_rotation_reject_reason_ << "\""
+          << ",\"temporal_reference_updated\":" <<
+       (last_temporal_reference_updated_ ? "true" : "false")
+          << ",\"rotation_anchor_updated\":" <<
+       (last_rotation_anchor_updated_ ? "true" : "false")
+         << ",\"temporal_rotation_ok\":" <<
+      (last_temporal_rotation_ok_ ? "true" : "false")
+         << ",\"pure_rotation_model\":" <<
+      (last_pure_rotation_model_ ? "true" : "false")
+         << ",\"rotation_decision\":\"" << last_rotation_decision_ << "\""
+         << ",\"rotation_episode_yaw_deg\":" << rotation_episode_yaw_deg_
+         << ",\"rotation_last_episode_yaw_deg\":" << rotation_last_episode_yaw_deg_
+         << ",\"rotation_total_yaw_deg\":" << rotation_total_yaw_deg_
+         << ",\"rotation_updates_total\":" << rotation_updates_total_
+         << ",\"rotation_wait_frames_total\":" << rotation_wait_frames_total_
+         << ",\"rotation_estimation_failure_frames\":" << rotation_estimation_failure_frames_
+         << ",\"rotation_residual_rejection_frames\":" << rotation_residual_rejection_frames_
+         << ",\"rotation_subthreshold_frames\":" << rotation_subthreshold_frames_
+         << ",\"rotation_rebootstrap_count\":" << rotation_rebootstrap_count_
+         << ",\"rotation_settle_count\":" << rotation_settle_count_
+         << ",\"rotation_wait_count\":" << rotation_wait_count_
          << ",\"map_updates_enabled\":" << (map_updates_enabled_ ? "true" : "false")
          << ",\"validation_success_frames\":" << validation_success_frames_
          << ",\"valid_matches\":" << temporal_matches
@@ -2566,10 +3123,23 @@ private:
   double rotation_max_translation_m_{0.03};
   double rotation_max_residual_px_{1.5};
   double rotation_scale_factor_{1.06};
+  double rotation_wahba_max_residual_px_{4.0};
+  double rotation_wahba_min_inlier_ratio_{0.45};
+  double rotation_wahba_positive_scale_{1.0};
+  double rotation_wahba_negative_scale_{1.043};
+  double rotation_metric_min_flow_px_{1.5};
+  double rotation_metric_consistency_deg_{5.0};
+  bool rotation_metric_pnp_enabled_{false};
+  int rotation_anchor_min_matches_{8};
+  double rotation_anchor_min_inlier_ratio_{0.45};
+  double rotation_anchor_max_angle_deg_{180.0};
+  int rotation_anchor_match_distance_{80};
+  double rotation_anchor_match_ratio_{0.88};
   double rotation_settle_deg_{0.20};
   double rotation_settle_flow_px_{0.75};
   int rotation_settle_frames_{3};
   int rebootstrap_validation_frames_{4};
+  int rotation_wait_rebootstrap_frames_{5};
   int min_pnp_inliers_{};
   double max_depth_m_{};
   double min_disparity_{};
@@ -2587,6 +3157,8 @@ private:
   double stereo_translation_scale_factor_{1.08};
   bool loop_closure_enabled_{true};
   bool loop_closure_apply_correction_{false};
+  std::string rotation_relocalization_mode_{"pure_stereo"};
+  double rotation_relocalization_max_pose_jump_m_{2.0};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};
   int loop_min_matches_{};
@@ -2644,8 +3216,18 @@ private:
   int tracking_failures_{0};
   int consecutive_tracking_failures_{0};
   int rotation_settle_count_{0};
+  int rotation_wait_count_{0};
+  int rotation_updates_total_{0};
+  int rotation_wait_frames_total_{0};
+  int rotation_estimation_failure_frames_{0};
+  int rotation_residual_rejection_frames_{0};
+  int rotation_subthreshold_frames_{0};
+  int rotation_rebootstrap_count_{0};
+  int rotation_anchor_gap_frames_{0};
+  int rotation_anchor_recovery_count_{0};
   int validation_success_frames_{0};
   int last_rotation_2d_inliers_{0};
+  int last_temporal_metric_inliers_{0};
   int last_temporal_matches_{0};
   int tracked_pairs_{0};
   int processed_frames_{0};
@@ -2655,15 +3237,47 @@ private:
   double last_motion_rotation_difference_{std::numeric_limits<double>::infinity()};
   double last_motion_consistency_{0.0};
   double last_rotation_2d_deg_{0.0};
+  mutable double last_rotation_2d_signed_deg_{0.0};
+  double rotation_episode_yaw_deg_{0.0};
+  double rotation_last_episode_yaw_deg_{0.0};
+  double rotation_total_yaw_deg_{0.0};
   double last_temporal_flow_px_{std::numeric_limits<double>::infinity()};
   double last_rotation_2d_residual_px_{std::numeric_limits<double>::infinity()};
+  double last_rotation_quality_{0.0};
+  double last_temporal_metric_yaw_deg_{0.0};
+  int last_rotation_anchor_matches_{0};
+  int last_rotation_anchor_inliers_{0};
+  int last_rotation_anchor_gap_frames_{0};
+  int last_rotation_descriptor_matches_{0};
+  int last_rotation_descriptor_inliers_{0};
+  double last_rotation_anchor_yaw_deg_{0.0};
+  double last_rotation_descriptor_yaw_deg_{0.0};
+  bool last_rotation_anchor_used_{false};
+  bool last_rotation_descriptor_used_{false};
   double last_frame_median_disparity_{0.0};
   double last_frame_min_depth_{0.0};
   double last_frame_median_depth_{0.0};
   double last_frame_reprojection_rmse_{0.0};
   std::array<double, 3> last_relative_translation_{0.0, 0.0, 0.0};
   std::string motion_source_{"none"};
+  mutable std::string last_rotation_estimator_{"unavailable"};
+  std::string last_rotation_observation_{"unavailable"};
+  std::string last_rotation_reject_reason_;
+  std::string yaw_update_source_{"none"};
+  std::string last_rotation_decision_{"not_in_rotation_state"};
   std::string recovery_state_{"tracking"};
+  bool last_temporal_rotation_ok_{false};
+  bool last_pure_rotation_model_{false};
+  bool last_temporal_reference_updated_{false};
+  bool last_rotation_anchor_updated_{false};
+  bool last_relocalization_attempted_{false};
+  bool last_relocalization_accepted_{false};
+  int last_relocalization_keyframe_id_{-1};
+  int last_relocalization_matches_{0};
+  int last_relocalization_inliers_{0};
+  double last_relocalization_reprojection_rmse_{std::numeric_limits<double>::infinity()};
+  double last_relocalization_pose_jump_m_{std::numeric_limits<double>::infinity()};
+  std::string last_relocalization_reject_reason_;
   bool map_updates_enabled_{true};
   std::optional<sensor_msgs::msg::CameraInfo> left_info_;
   std::optional<sensor_msgs::msg::CameraInfo> right_info_;
@@ -2675,6 +3289,8 @@ private:
   cv::Mat gazebo_T_map_;
   cv::Mat reference_world_pose_;
   cv::Mat temporal_reference_world_pose_;
+  std::optional<Frame> rotation_anchor_;
+  cv::Mat rotation_anchor_world_pose_;
   double trajectory_distance_{0.0};
   double committed_distance_{0.0};
   int reference_age_{0};
