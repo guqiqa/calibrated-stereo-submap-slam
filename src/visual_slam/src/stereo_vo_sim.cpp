@@ -1109,7 +1109,9 @@ private:
     int stereo_points, int temporal_matches, int pnp_inliers) const
   {
     visual_slam::ObservabilityEvidence evidence;
-    const int feature_count = std::max(stereo_points, temporal_matches);
+    evidence.qualified_measurement = last_measurement_accepted_;
+    const int feature_count = std::max(stereo_points, std::max(temporal_matches,
+      last_short_baseline_matches_));
     const int metric_inliers = std::max(pnp_inliers, last_rigid_inliers_);
     const int candidate_inliers = std::max(metric_inliers, last_rotation_2d_inliers_);
     evidence.features = feature_count;
@@ -2373,6 +2375,7 @@ private:
     const auto started = std::chrono::steady_clock::now();
     ++processed_frames_;
     const std::optional<Frame> previous_frame = last_processed_frame_;
+    last_measurement_accepted_ = false;
     Frame current = make_stereo_frame(left, right);
     last_processed_frame_ = current;
     std::vector<cv::Point2f> coverage_points;
@@ -2633,6 +2636,7 @@ private:
         map_updates_enabled_ = false;
         rotation_settle_count_ = 0;
         rotation_wait_count_ = 0;
+        last_measurement_accepted_ = true;
         motion_source_ = use_anchor_rotation ? "visual_rotation_anchor_recovery" :
           (use_descriptor_temporal_rotation ? "visual_rotation_descriptor" : "visual_rotation_2d");
         yaw_update_source_ = use_anchor_rotation ? "orb_anchor_wahba" :
@@ -2935,6 +2939,7 @@ private:
     last_relative_translation_[0] = selected_transform.at<double>(0, 3);
     last_relative_translation_[1] = selected_transform.at<double>(1, 3);
     last_relative_translation_[2] = selected_transform.at<double>(2, 3);
+    last_measurement_accepted_ = true;
     // The metric keyframe is held for a short reference window, so selected_transform
     // already represents current_T_reference and must not be multiplied by
     // estimates from earlier frames in the same window.
@@ -3467,6 +3472,7 @@ private:
   std::optional<Frame> unobserved_entry_frame_{};
   std::optional<Frame> last_processed_frame_{};
   bool last_short_baseline_used_{false};
+  bool last_measurement_accepted_{false};
   int last_short_baseline_matches_{0};
   int last_short_baseline_inliers_{0};
   double last_short_baseline_yaw_deg_{0.0};

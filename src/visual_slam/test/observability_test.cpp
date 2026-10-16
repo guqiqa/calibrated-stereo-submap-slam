@@ -152,6 +152,20 @@ void test_unevaluated_metrics_are_neutral()
     "measured evidence still disqualifies");
 }
 
+void test_measured_frame_ignores_distribution()
+{
+  ObservabilityThresholds thresholds;
+  ObservabilityEvidence evidence = good_evidence();
+  evidence.grid_coverage = 1;
+  expect_true(
+    visual_slam::classify_evidence(evidence, thresholds) == EvidenceVerdict::kDisqualified,
+    "poor distribution disqualifies an unmeasured frame");
+  evidence.qualified_measurement = true;
+  expect_true(
+    visual_slam::classify_evidence(evidence, thresholds) == EvidenceVerdict::kQualified,
+    "poor distribution alone does not disqualify a measured frame");
+}
+
 void test_legacy_mode_never_suppresses()
 {
   ObservabilityStateMachine machine(ObservabilityMode::kB0Plain, ObservabilityThresholds{});
@@ -314,6 +328,7 @@ int main()
 {
   test_thresholds_and_classification();
   test_unevaluated_metrics_are_neutral();
+  test_measured_frame_ignores_distribution();
   test_legacy_mode_never_suppresses();
   test_entry_hysteresis_and_r_pre_freeze();
   test_marginal_breaks_runs();

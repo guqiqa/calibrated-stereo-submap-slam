@@ -89,6 +89,16 @@ def attribution_command(run_dir: Path, output_dir: Path, label: str, no_plot: bo
     return command
 
 
+def valid_run(run_dir: Path, min_status_messages: int) -> bool:
+    """A run is analysable only when the VO actually processed frames."""
+    summary = load_json(run_dir / "summary.json")
+    if not summary:
+        return False
+    if int(summary.get("status_messages", 0)) < min_status_messages:
+        return False
+    return summary.get("last_state") != "waiting_for_camera_info"
+
+
 def load_json(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
@@ -162,6 +172,10 @@ def main() -> int:
     parser.add_argument("--no-gui", dest="no_gui", action="store_true", default=True)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--no-plot", action="store_true")
+    parser.add_argument("--max-attempts", type=int, default=2,
+                        help="retry the whole mode when too few runs produced data")
+    parser.add_argument("--min-status-messages", type=int, default=100,
+                        help="a run with fewer VO status messages counts as dead")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be >= 1")
@@ -177,23 +191,32 @@ def main() -> int:
     for mode in args.modes:
         output = root / mode
         runs_dir = output / "c0"
-        existing = sorted(runs_dir.glob("run_*")) if runs_dir.exists() else []
-        complete = [path for path in existing if (path / "summary.json").exists()]
-        if len(complete) >= args.runs and not args.force:
-            print("[suite] " + mode + ": reuse " + str(len(complete)) + " existing runs", flush=True)
-        else:
+        attempt = 0
+        valid: List[Path] = []
+        while attempt < args.max_attempts:
+            attempt += 1
+            existing = sorted(runs_dir.glob("run_*")) if runs_dir.exists() else []
+            valid = [path for path in existing if valid_run(path, args.min_status_messages)]
+            if len(valid) >= args.runs and not args.force:
+                print("[suite] " + mode + ": reuse " + str(len(valid)) + " valid run(s)", flush=True)
+                break
             command = experiment_command(args, mode, output)
             log_path = root / "logs" / (mode + ".log")
             started = time.time()
-            print("[suite] " + mode + ": running " + str(args.runs) + " repeat(s) ...", flush=True)
+            print("[suite] " + mode + ": attempt %d/%d, running %d repeat(s) ..." % (
+                attempt, args.max_attempts, args.runs), flush=True)
             code = run_command(command, log_path, repository_root())
             print("[suite] " + mode + ": exit=%d, %.1f s, log=%s" % (code, time.time() - started, log_path),
                   flush=True)
-            complete = sorted((runs_dir.glob("run_*") if runs_dir.exists() else []))
-            complete = [path for path in complete if (path / "summary.json").exists()]
+            existing = sorted((runs_dir.glob("run_*") if runs_dir.exists() else []))
+            valid = [path for path in existing if valid_run(path, args.min_status_messages)]
+            if len(valid) >= args.runs:
+                break
+            print("[suite] " + mode + ": only %d valid run(s) of %d, retrying" % (len(valid), args.runs),
+                  flush=True)
 
         reports: List[Dict[str, Any]] = []
-        for run_dir in complete[:args.runs]:
+        for run_dir in valid[:args.runs]:
             label = mode + "_" + run_dir.name
             run_command(attribution_command(run_dir, attribution_dir, label, args.no_plot),
                         attribution_dir / (label + ".log"), repository_root())
@@ -201,6 +224,8 @@ def main() -> int:
             if report is not None:
                 report["run_dir"] = str(run_dir)
                 reports.append(report)
+        if len(reports) < args.runs:
+            print("[suite] " + mode + ": WARNING only " + str(len(reports)) + " analysable run(s)", flush=True)
         mode_reports[mode] = reports
 
     payload = {"modes": args.modes, "runs": args.runs, "reports": mode_reports}

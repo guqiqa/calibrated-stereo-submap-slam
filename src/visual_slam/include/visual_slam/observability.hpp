@@ -128,6 +128,11 @@ struct ObservabilityThresholds
 struct ObservabilityEvidence
 {
   bool available{false};
+  // True when this frame produced an accepted qualified relative measurement.
+  // A measured frame is not disqualified by spatial distribution alone: poor
+  // distribution degrades translation observability, not the rotation estimate
+  // that was actually accepted.
+  bool qualified_measurement{false};
   int features{0};
   int inliers{0};
   double inlier_ratio{0.0};
@@ -178,7 +183,8 @@ inline std::uint32_t disqualifying_flags(
     flags |= kEvidenceLargeViewChange;
   }
   if (evidence_evaluated(evidence.grid_coverage) &&
-    evidence.grid_coverage < thresholds.min_grid_coverage_enter)
+    evidence.grid_coverage < thresholds.min_grid_coverage_enter &&
+    !evidence.qualified_measurement)
   {
     flags |= kEvidencePoorDistribution;
   }
@@ -200,7 +206,8 @@ inline bool qualifies(
     evidence.reprojection_px <= thresholds.max_reprojection_ok;
   const bool view_change_ok = !evidence_evaluated(evidence.view_change_deg) ||
     evidence.view_change_deg <= thresholds.max_view_change_ok_deg;
-  const bool coverage_ok = !evidence_evaluated(evidence.grid_coverage) ||
+  const bool coverage_ok = evidence.qualified_measurement ||
+    !evidence_evaluated(evidence.grid_coverage) ||
     evidence.grid_coverage >= thresholds.min_grid_coverage_ok;
   const bool conditioning_ok = !evidence_evaluated(evidence.condition_number) ||
     evidence.condition_number <= thresholds.max_condition_ok;
