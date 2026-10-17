@@ -570,6 +570,10 @@ struct RotationCommitDecision
   double frame_deg{0.0};
   double pending_deg{0.0};
   int pending_frames{0};
+  // Signed rotation accumulated over the confirmed window, applied as one
+  // planar rotation at the commit frame. Earlier frames are never rewritten.
+  double window_deg{0.0};
+  int window_frames{0};
 };
 
 class RotationCommitTracker
@@ -640,9 +644,11 @@ public:
     if (pending_frames_ >= config_.min_frames && pending_deg_ >= config_.commit_deg) {
       decision.commit = true;
       decision.reason = "commit_confirmed";
+      decision.window_deg = pending_deg_ * static_cast<double>(pending_sign_);
+      decision.window_frames = pending_frames_;
       ++commit_frames_;
-      // Only the current frame is committed; the window never accumulates
-      // beyond one confirmation, so nothing is applied twice.
+      // The confirmed window is applied once at this frame; it never accumulates
+      // beyond one confirmation, so no rotation is counted twice.
       pending_sign_ = 0;
       pending_deg_ = 0.0;
       pending_frames_ = 0;

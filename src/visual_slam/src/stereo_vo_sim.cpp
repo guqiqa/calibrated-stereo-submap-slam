@@ -2729,9 +2729,10 @@ private:
       use_descriptor_temporal_rotation;
     last_pure_rotation_model_ = pure_rotation_model;
     last_rotation_decision_ = "not_in_rotation_state";
-    const auto apply_temporal_rotation = [&](const cv::Mat & source_world_pose) {
+    const auto apply_temporal_rotation = [&](const cv::Mat & source_world_pose,
+        const cv::Mat & rotation) {
         cv::Mat current_T_temporal = cv::Mat::eye(4, 4, CV_64F);
-        temporal_rotation.copyTo(current_T_temporal(cv::Rect(0, 0, 3, 3)));
+        rotation.copyTo(current_T_temporal(cv::Rect(0, 0, 3, 3)));
         const cv::Mat pose_increment = current_T_temporal.inv();
         const double applied_yaw_deg = std::atan2(
           pose_increment.at<double>(0, 2), pose_increment.at<double>(2, 2)) * 180.0 / CV_PI;
@@ -2789,9 +2790,18 @@ private:
         use_short_baseline_rotation);
       last_rotation_commit_ = rotation_commit_.update(signed_rotation_deg, rotation_quality_ok);
       if (last_rotation_commit_.commit) {
+        // Apply the confirmed window (all frames since the last commit) as one
+        // planar rotation at this frame; earlier frames keep their published pose.
+        const double window_rad = last_rotation_commit_.window_deg * CV_PI / 180.0;
+        const double window_cos = std::cos(window_rad);
+        const double window_sin = std::sin(window_rad);
+        cv::Mat window_rotation = (cv::Mat_<double>(3, 3) <<
+          window_cos, 0.0, window_sin,
+          0.0, 1.0, 0.0,
+          -window_sin, 0.0, window_cos);
         const cv::Mat source_pose = use_short_baseline_rotation ? world_T_current_ :
           (use_anchor_rotation ? rotation_anchor_world_pose_ : temporal_reference_world_pose_);
-        apply_temporal_rotation(source_pose);
+        apply_temporal_rotation(source_pose, window_rotation);
         return;
       }
       const int effective_matches = use_short_baseline_rotation ? short_baseline_matches :
@@ -2898,7 +2908,7 @@ private:
     if (stereo_points < min_tracking_stereo_points_) {
       if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
         apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
-          temporal_reference_world_pose_);
+          temporal_reference_world_pose_, temporal_rotation);
         return;
       }
       ++tracking_failures_;
@@ -3031,7 +3041,7 @@ private:
       rotation_angle_deg(selected_transform) >= rotation_min_deg_));
     if (rotation_dominant) {
       apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
-        temporal_reference_world_pose_);
+        temporal_reference_world_pose_, temporal_rotation);
       return;
     }
     if (selected_transform.empty()) {

@@ -181,10 +181,19 @@ void test_rotation_commit_requires_two_frames()
   expect_true(second.commit, "two same-sign frames above the commit angle commit");
   expect_eq(second.pending_frames, 2, "two frames in the window");
   expect_eq(tracker.commit_frames(), 1, "one commit recorded");
+  expect_true(std::abs(second.window_deg - 0.22) < 1.0e-9,
+    "the confirmed window carries the signed sum of both frames");
+  expect_eq(second.window_frames, 2, "the window reports how many frames it covered");
 
   auto third = tracker.update(0.06, true);
   expect_true(!third.commit, "the window restarts after a commit");
   expect_eq(third.pending_frames, 1, "fresh window has one frame");
+
+  tracker.reset();
+  tracker.update(-0.12, true);
+  auto negative = tracker.update(-0.11, true);
+  expect_true(negative.commit, "negative windows commit as well");
+  expect_true(negative.window_deg < -0.22 + 1.0e-9, "the window keeps the sign");
 
   tracker.reset();
   tracker.update(0.12, true);
