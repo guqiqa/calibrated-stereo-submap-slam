@@ -160,10 +160,12 @@ void test_metric_and_recovery_alternation()
   expect_near(state.committed_deg(), 0.22, 1e-9, "heading follows the confirmed candidate");
   const auto next = state.propose(candidate(3, 0.31, true, HeadingSource::kShortBaseline));
   expect_true(!next.commit, "a fresh window after a commit needs its own confirmation");
-  const auto confirm = state.propose(candidate(4, 0.42, true, HeadingSource::kMetricPnp));
+  // Keep the values clear of the exact commit boundary (0.20 deg) so the test
+  // checks the policy, not floating point rounding.
+  const auto confirm = state.propose(candidate(4, 0.45, true, HeadingSource::kMetricPnp));
   expect_true(confirm.commit, "the next window commits across sources");
-  expect_near(state.committed_deg(), 0.42, 1e-9, "heading follows the second confirmation");
-  const auto after = state.propose(candidate(5, 0.42, true, HeadingSource::kMetricPnp));
+  expect_near(state.committed_deg(), 0.45, 1e-9, "heading follows the second confirmation");
+  const auto after = state.propose(candidate(5, 0.45, true, HeadingSource::kMetricPnp));
   expect_true(!after.commit, "no autonomous drift after the commit");
 }
 
