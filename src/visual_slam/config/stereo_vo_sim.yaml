@@ -61,6 +61,7 @@ stereo_vo_sim:
     relocalization_min_keyframe_gap: 2
     relocalization_min_matches: 20
     relocalization_min_inliers: 12
+    relocalization_search_period: 30
     loop_check_period_frames: 15
     loop_min_keyframe_gap: 8
     loop_min_matches: 35

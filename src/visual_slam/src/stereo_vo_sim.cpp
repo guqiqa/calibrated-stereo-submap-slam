@@ -176,6 +176,7 @@ public:
       "relocalization_min_keyframe_gap", 2);
     relocalization_min_matches_ = declare_parameter<int>("relocalization_min_matches", 20);
     relocalization_min_inliers_ = declare_parameter<int>("relocalization_min_inliers", 12);
+    relocalization_search_period_ = declare_parameter<int>("relocalization_search_period", 30);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -1211,16 +1212,64 @@ private:
       } else {
         last_relocalization_reject_reason_ = "pnp_geometry_rejected";
       }
-      if (std::isfinite(closure_rotation_deg) || std::isfinite(closure_translation_m)) {
+      if (std::isfinite(closure_rotation_deg)) {
         last_observability_closure_rotation_deg_ = closure_rotation_deg;
         last_observability_closure_translation_m_ = closure_translation_m;
-        observability_.finalize_interval(close_reason, closure_translation_m,
-          closure_rotation_deg, -1);
+        observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
+          closure_translation_m, closure_rotation_deg, -1);
       }
+      // The absolute bracket may only become available once the robot drives
+      // back into a mapped view, so an unresolved interval keeps searching.
+    }
+    if (observability_.unresolved_interval_count() > 0 && observability_.measurement_valid() &&
+      temporal_reference_ && observability_.frame_index() %
+      std::max(1, relocalization_search_period_) == 0)
+    {
+      attempt_reacquisition_relocalization();
     }
     if (current_state == visual_slam::VisualState::kObserved) {
       unobserved_entry_frame_ = std::nullopt;
     }
+  }
+
+  // Absolute bracket closure. Keeps searching while an interval stays open
+  // because a map-matched view may only reappear after the robot drives back
+  // into mapped territory; the online pose is never overwritten here.
+  void attempt_reacquisition_relocalization()
+  {
+    if (!temporal_reference_ || temporal_reference_->temporal_descriptors.empty()) {
+      return;
+    }
+    int candidate_matches = 0;
+    int candidate_inliers = 0;
+    last_relocalization_attempted_ = true;
+    const LoopClosure relocalization = detect_loop_closure(*temporal_reference_,
+      relocalization_min_keyframe_gap_, relocalization_min_matches_,
+      relocalization_min_inliers_, &candidate_matches, &candidate_inliers);
+    last_relocalization_keyframe_id_ = relocalization.keyframe_id;
+    last_relocalization_matches_ = relocalization.accepted ? relocalization.matches :
+      candidate_matches;
+    last_relocalization_inliers_ = relocalization.accepted ? relocalization.inliers :
+      candidate_inliers;
+    if (!relocalization.accepted || relocalization.corrected_pose.empty()) {
+      last_relocalization_reject_reason_ = "pnp_geometry_rejected";
+      return;
+    }
+    last_relocalization_reprojection_rmse_ = relocalization.reprojection_rmse;
+    last_relocalization_pose_jump_m_ = pose_distance(
+      relocalization.corrected_pose, world_T_current_);
+    if (last_relocalization_pose_jump_m_ > rotation_relocalization_max_pose_jump_m_) {
+      last_relocalization_reject_reason_ = "pose_jump_out_of_range";
+      return;
+    }
+    last_relocalization_accepted_ = true;
+    const double closure_rotation_deg = rotation_difference_deg(
+      relocalization.corrected_pose, world_T_current_);
+    last_observability_closure_rotation_deg_ = closure_rotation_deg;
+    last_observability_closure_translation_m_ = last_relocalization_pose_jump_m_;
+    observability_.finalize_interval(visual_slam::IntervalCloseReason::kRelocalization,
+      last_relocalization_pose_jump_m_, closure_rotation_deg,
+      observability_.frame_index());
   }
 
   void set_rotation_anchor(const Frame & frame, const cv::Mat & world_pose)
@@ -3461,6 +3510,7 @@ private:
   int relocalization_min_keyframe_gap_{2};
   int relocalization_min_matches_{20};
   int relocalization_min_inliers_{12};
+  int relocalization_search_period_{30};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};
   int loop_min_matches_{};
