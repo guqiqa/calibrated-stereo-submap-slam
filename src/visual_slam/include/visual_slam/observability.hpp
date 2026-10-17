@@ -406,11 +406,14 @@ public:
         }
         break;
       case VisualState::kUnobserved:
-        ++unobserved_frames_;
-        ++measurements_suppressed_;
+        if (records_intervals()) {
+          ++unobserved_frames_;
+          ++measurements_suppressed_;
+        }
         if (records_intervals() && !intervals_.empty()) {
           ++intervals_.back().frames;
           ++intervals_.back().measurements_suppressed;
+          current_interval_ = intervals_.back();
         }
         if (verdict == EvidenceVerdict::kQualified &&
           consecutive_qualified_ >= thresholds_.exit_frames)
@@ -473,6 +476,10 @@ private:
   {
     state_ = VisualState::kUnobserved;
     consecutive_qualified_ = 0;
+    if (records_intervals()) {
+      ++unobserved_frames_;
+      ++measurements_suppressed_;
+    }
     const std::uint32_t flags = disqualifying_flags(evidence, thresholds_);
     if (records_intervals()) {
       UnobservedInterval interval;
@@ -484,6 +491,10 @@ private:
       r_pre_frame_ = last_valid_frame_;
       interval.enter_flags = flags;
       interval.enter_evidence = evidence;
+      // The triggering frame belongs to the interval: counters start at one so
+      // that start_frame, end_frame and frames stay consistent.
+      interval.frames = 1;
+      interval.measurements_suppressed = 1;
       intervals_.push_back(interval);
       current_interval_ = intervals_.back();
     } else {
@@ -536,4 +547,122 @@ int grid_coverage(const std::vector<PointT> & points, double width, double heigh
   return count;
 }
 
+// Short-window rotation commit policy.
+//
+// A single frame never commits on its own: the increment must clear the
+// minimum measurable angle, pass the quality gate, agree in sign with the
+// previous candidate frame, and together reach the commit angle. Only the
+// current frame is committed; the earlier candidate frame is recorded as
+// sub-threshold and its pose is never rewritten.
+struct RotationCommitConfig
+{
+  double min_frame_deg{0.05};
+  double commit_deg{0.20};
+  int min_frames{2};
+};
+
+struct RotationCommitDecision
+{
+  bool candidate{false};
+  bool commit{false};
+  std::string reason{"idle"};
+  int sign{0};
+  double frame_deg{0.0};
+  double pending_deg{0.0};
+  int pending_frames{0};
+};
+
+class RotationCommitTracker
+{
+public:
+  explicit RotationCommitTracker(const RotationCommitConfig & config = RotationCommitConfig{})
+  : config_(config)
+  {
+  }
+
+  void reset()
+  {
+    pending_sign_ = 0;
+    pending_deg_ = 0.0;
+    pending_frames_ = 0;
+    candidate_frames_ = 0;
+    commit_frames_ = 0;
+    rejected_frames_ = 0;
+    last_ = RotationCommitDecision{};
+  }
+
+  const RotationCommitConfig & config() const { return config_; }
+  int candidate_frames() const { return candidate_frames_; }
+  int commit_frames() const { return commit_frames_; }
+  int rejected_frames() const { return rejected_frames_; }
+  const RotationCommitDecision & last() const { return last_; }
+
+  RotationCommitDecision update(double signed_deg, bool quality_ok)
+  {
+    RotationCommitDecision decision;
+    decision.frame_deg = std::abs(signed_deg);
+    const int sign = (signed_deg > 0.0) ? 1 : ((signed_deg < 0.0) ? -1 : 0);
+    decision.sign = sign;
+
+    const bool candidate = quality_ok &&
+      std::isfinite(signed_deg) &&
+      decision.frame_deg >= config_.min_frame_deg &&
+      sign != 0;
+    decision.candidate = candidate;
+
+    if (!candidate) {
+      pending_sign_ = 0;
+      pending_deg_ = 0.0;
+      pending_frames_ = 0;
+      decision.reason = quality_ok ? "below_min_frame_deg" : "quality_gate_failed";
+      ++rejected_frames_;
+      last_ = decision;
+      return decision;
+    }
+
+    ++candidate_frames_;
+    if (pending_frames_ == 0 || sign != pending_sign_) {
+      // Start a fresh window; a sign flip discards the previous candidate.
+      pending_sign_ = sign;
+      pending_deg_ = decision.frame_deg;
+      pending_frames_ = 1;
+      decision.reason = (candidate_frames_ == 1) ? "candidate_started" : "candidate_restarted";
+      decision.pending_deg = pending_deg_;
+      decision.pending_frames = pending_frames_;
+      last_ = decision;
+      return decision;
+    }
+
+    pending_deg_ += decision.frame_deg;
+    ++pending_frames_;
+    decision.pending_deg = pending_deg_;
+    decision.pending_frames = pending_frames_;
+    if (pending_frames_ >= config_.min_frames && pending_deg_ >= config_.commit_deg) {
+      decision.commit = true;
+      decision.reason = "commit_confirmed";
+      ++commit_frames_;
+      // Only the current frame is committed; the window never accumulates
+      // beyond one confirmation, so nothing is applied twice.
+      pending_sign_ = 0;
+      pending_deg_ = 0.0;
+      pending_frames_ = 0;
+    } else {
+      decision.reason = "candidate_pending";
+    }
+    last_ = decision;
+    return decision;
+  }
+
+private:
+  RotationCommitConfig config_{};
+  int pending_sign_{0};
+  double pending_deg_{0.0};
+  int pending_frames_{0};
+  int candidate_frames_{0};
+  int commit_frames_{0};
+  int rejected_frames_{0};
+  RotationCommitDecision last_{};
+};
+
 }  // namespace visual_slam
+

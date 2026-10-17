@@ -166,6 +166,55 @@ void test_measured_frame_ignores_distribution()
     "poor distribution alone does not disqualify a measured frame");
 }
 
+void test_rotation_commit_requires_two_frames()
+{
+  using visual_slam::RotationCommitConfig;
+  using visual_slam::RotationCommitTracker;
+  RotationCommitTracker tracker{RotationCommitConfig{}};
+
+  auto first = tracker.update(0.12, true);
+  expect_true(first.candidate, "first frame is a candidate");
+  expect_true(!first.commit, "a single frame never commits");
+  expect_eq(first.pending_frames, 1, "one candidate frame pending");
+
+  auto second = tracker.update(0.10, true);
+  expect_true(second.commit, "two same-sign frames above the commit angle commit");
+  expect_eq(second.pending_frames, 2, "two frames in the window");
+  expect_eq(tracker.commit_frames(), 1, "one commit recorded");
+
+  auto third = tracker.update(0.06, true);
+  expect_true(!third.commit, "the window restarts after a commit");
+  expect_eq(third.pending_frames, 1, "fresh window has one frame");
+
+  tracker.reset();
+  tracker.update(0.12, true);
+  auto flipped = tracker.update(-0.09, true);
+  expect_true(!flipped.commit, "a sign flip does not commit");
+  expect_eq(flipped.sign, -1, "the new candidate takes the new sign");
+  expect_eq(flipped.pending_frames, 1, "sign flip restarts the window");
+
+  tracker.reset();
+  tracker.update(0.02, true);
+  auto weak = tracker.update(0.02, true);
+  expect_true(!weak.candidate, "below the per-frame minimum is not a candidate");
+  expect_true(weak.reason == "below_min_frame_deg", "weak frame reason recorded");
+
+  tracker.reset();
+  tracker.update(0.10, false);
+  auto gated = tracker.update(0.10, true);
+  expect_true(!gated.commit, "a frame that fails the quality gate never commits");
+  expect_true(gated.candidate, "the next good frame starts a new candidate");
+
+  tracker.reset();
+  tracker.update(0.05, true);
+  auto below = tracker.update(0.05, true);
+  expect_true(!below.commit, "a window sum below the commit angle does not commit");
+  tracker.update(0.05, true);
+  auto reached = tracker.update(0.05, true);
+  expect_true(reached.commit, "commit when the window sum reaches the commit angle");
+  expect_eq(reached.pending_frames, 4, "four frames accumulated in the window");
+}
+
 void test_legacy_mode_never_suppresses()
 {
   ObservabilityStateMachine machine(ObservabilityMode::kB0Plain, ObservabilityThresholds{});
@@ -205,8 +254,11 @@ void test_entry_hysteresis_and_r_pre_freeze()
     machine.update(bad_evidence());
     expect_eq(machine.r_pre_frame(), 1, "R_pre does not move while UNOBSERVED");
   }
-  expect_eq(machine.total_unobserved_frames(), 20, "unobserved frames counted");
-  expect_eq(machine.measurements_suppressed(), 20, "suppressed measurements counted");
+  // The triggering frame already belongs to the interval, so the 20 extra
+  // updates bring the total to 21.
+  expect_eq(machine.total_unobserved_frames(), 21, "unobserved frames counted from the triggering frame");
+  expect_eq(machine.measurements_suppressed(), 21, "suppressed measurements counted");
+  expect_eq(machine.current_interval().frames, 21, "current interval frames stay in sync");
   expect_true(machine.frames_since_valid_measurement() > 20, "age grows while unobserved");
 }
 
@@ -329,6 +381,7 @@ int main()
   test_thresholds_and_classification();
   test_unevaluated_metrics_are_neutral();
   test_measured_frame_ignores_distribution();
+  test_rotation_commit_requires_two_frames();
   test_legacy_mode_never_suppresses();
   test_entry_hysteresis_and_r_pre_freeze();
   test_marginal_breaks_runs();

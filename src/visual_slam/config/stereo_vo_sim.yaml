@@ -120,3 +120,6 @@ stereo_vo_sim:
     obs_enter_frames: 2
     obs_exit_frames: 3
     obs_relocalization_timeout_frames: 90
+    obs_rotation_min_frame_deg: 0.05
+    obs_rotation_commit_deg: 0.20
+    obs_rotation_commit_frames: 2

@@ -177,6 +177,12 @@ public:
     relocalization_min_matches_ = declare_parameter<int>("relocalization_min_matches", 20);
     relocalization_min_inliers_ = declare_parameter<int>("relocalization_min_inliers", 12);
     relocalization_search_period_ = declare_parameter<int>("relocalization_search_period", 30);
+    rotation_commit_config_.min_frame_deg = declare_parameter<double>(
+      "obs_rotation_min_frame_deg", 0.05);
+    rotation_commit_config_.commit_deg = declare_parameter<double>(
+      "obs_rotation_commit_deg", 0.20);
+    rotation_commit_config_.min_frames = declare_parameter<int>("obs_rotation_commit_frames", 2);
+    rotation_commit_ = visual_slam::RotationCommitTracker(rotation_commit_config_);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -1136,7 +1142,11 @@ private:
     return evidence;
   }
 
-  void update_observability(int stereo_points, int temporal_matches, int pnp_inliers)
+  // Called once per processed frame, right after the frame geometry is known
+  // and BEFORE any submap ranking, switch confirmation or map write. The state
+  // must describe the current frame, not the previous one.
+  void update_observability(const Frame & frame, int stereo_points, int temporal_matches,
+    int pnp_inliers)
   {
     if (!metric_keyframe_ || world_T_current_.empty()) {
       return;
@@ -1184,19 +1194,17 @@ private:
       double closure_rotation_deg = std::numeric_limits<double>::quiet_NaN();
       double closure_translation_m = std::numeric_limits<double>::quiet_NaN();
       const bool descriptor_closure_ok = estimate_descriptor_rotation(*unobserved_entry_frame_,
-        *temporal_reference_, closure_rotation, closure_matches, closure_inliers,
+        frame, closure_rotation, closure_matches, closure_inliers,
         closure_yaw_deg, closure_residual_px);
       if (descriptor_closure_ok && std::isfinite(closure_yaw_deg)) {
         closure_rotation_deg = std::abs(closure_yaw_deg);
       }
       // 2) Absolute check against the built map: PnP against historical keyframes
       // gives an independent R_post pose, which is what the interval needs.
-      visual_slam::IntervalCloseReason close_reason =
-        visual_slam::IntervalCloseReason::kAnchorValidation;
       last_relocalization_attempted_ = true;
       int candidate_matches = 0;
       int candidate_inliers = 0;
-      const LoopClosure relocalization = detect_loop_closure(*temporal_reference_,
+      const LoopClosure relocalization = detect_loop_closure(frame,
         relocalization_min_keyframe_gap_, relocalization_min_matches_,
         relocalization_min_inliers_, &candidate_matches, &candidate_inliers);
       last_relocalization_keyframe_id_ = relocalization.keyframe_id;
@@ -1213,18 +1221,25 @@ private:
           closure_translation_m = last_relocalization_pose_jump_m_;
           closure_rotation_deg = rotation_difference_deg(
             relocalization.corrected_pose, world_T_current_);
-          close_reason = visual_slam::IntervalCloseReason::kRelocalization;
         } else {
           last_relocalization_reject_reason_ = "pose_jump_out_of_range";
         }
       } else {
         last_relocalization_reject_reason_ = "pnp_geometry_rejected";
       }
-      if (std::isfinite(closure_rotation_deg)) {
+      if (last_relocalization_accepted_ && std::isfinite(closure_rotation_deg)) {
+        // PnP against the map: an independent absolute pose.
         last_observability_closure_rotation_deg_ = closure_rotation_deg;
         last_observability_closure_translation_m_ = closure_translation_m;
-        observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
+        observability_.finalize_interval(visual_slam::IntervalCloseReason::kRelocalization,
           closure_translation_m, closure_rotation_deg, -1);
+      } else if (std::isfinite(closure_rotation_deg)) {
+        // Descriptor/Wahba bridge: rotation only; the translation between R_pre
+        // and R_post is not independently measurable and stays unknown.
+        last_observability_closure_rotation_deg_ = closure_rotation_deg;
+        last_observability_closure_translation_m_ = std::numeric_limits<double>::quiet_NaN();
+        observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
+          std::numeric_limits<double>::quiet_NaN(), closure_rotation_deg, -1);
       } else if (interval_frame_count_ > 0 &&
         interval_accepted_frames_ * 10 >= interval_frame_count_ * 9)
       {
@@ -1240,11 +1255,10 @@ private:
       // The absolute bracket may only become available once the robot drives
       // back into a mapped view, so an unresolved interval keeps searching.
     }
-    if (observability_.unresolved_interval_count() > 0 && observability_.measurement_valid() &&
-      temporal_reference_ && observability_.frame_index() %
-      std::max(1, relocalization_search_period_) == 0)
+    if (observability_.unresolved_interval_count() > 0 && !frame.temporal_descriptors.empty() &&
+      observability_.frame_index() % std::max(1, relocalization_search_period_) == 0)
     {
-      attempt_reacquisition_relocalization();
+      attempt_reacquisition_relocalization(frame);
     }
     if (current_state == visual_slam::VisualState::kObserved) {
       unobserved_entry_frame_ = std::nullopt;
@@ -1254,15 +1268,15 @@ private:
   // Absolute bracket closure. Keeps searching while an interval stays open
   // because a map-matched view may only reappear after the robot drives back
   // into mapped territory; the online pose is never overwritten here.
-  void attempt_reacquisition_relocalization()
+  void attempt_reacquisition_relocalization(const Frame & frame)
   {
-    if (!temporal_reference_ || temporal_reference_->temporal_descriptors.empty()) {
+    if (frame.temporal_descriptors.empty()) {
       return;
     }
     int candidate_matches = 0;
     int candidate_inliers = 0;
     last_relocalization_attempted_ = true;
-    const LoopClosure relocalization = detect_loop_closure(*temporal_reference_,
+    const LoopClosure relocalization = detect_loop_closure(frame,
       relocalization_min_keyframe_gap_, relocalization_min_matches_,
       relocalization_min_inliers_, &candidate_matches, &candidate_inliers);
     last_relocalization_keyframe_id_ = relocalization.keyframe_id;
@@ -2758,25 +2772,23 @@ private:
         consecutive_tracking_failures_ = 0;
         trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9,
           world_T_current_.clone()});
+        update_observability(current, stereo_points, temporal_matches, temporal_rotation_inliers);
         publish_odometry(stamp, temporal_rotation_inliers);
         publish_status("rotation_only", stereo_points, temporal_matches, 0,
           pair_delta_ms, elapsed_ms(started));
       };
     if (in_rotation_recovery) {
       const bool anchor_gap_unresolved = rotation_anchor_gap_frames_ > 0 && !use_anchor_rotation;
-      const bool local_gap_fallback = anchor_gap_unresolved &&
-        rotation_wait_count_ >= rotation_wait_rebootstrap_frames_ &&
-        (temporal_rotation_ok || use_descriptor_temporal_rotation || use_short_baseline_rotation);
-      const bool meaningful_rotation = pure_rotation_model &&
-        (!anchor_gap_unresolved || local_gap_fallback) &&
-        (temporal_rotation_deg >= rotation_settle_deg_ ||
-        (std::isfinite(temporal_flow_px) && temporal_flow_px > rotation_settle_flow_px_ &&
-        temporal_rotation_deg >= 0.05));
-      if (meaningful_rotation) {
-        if (local_gap_fallback) {
-          last_rotation_decision_ = "local_rotation_fallback_after_anchor_gap";
-          last_rotation_estimator_ = "temporal_after_anchor_gap";
-        }
+      // A single frame never commits on its own. The wait counter no longer
+      // decides acceptance; it only feeds the diagnostic log.
+      const double signed_rotation_deg = temporal_rotation.empty() ? 0.0 :
+        std::atan2(temporal_rotation.at<double>(0, 2),
+        temporal_rotation.at<double>(2, 2)) * 180.0 / CV_PI;
+      const bool rotation_quality_ok = pure_rotation_model &&
+        (!anchor_gap_unresolved || use_anchor_rotation || use_descriptor_temporal_rotation ||
+        use_short_baseline_rotation);
+      last_rotation_commit_ = rotation_commit_.update(signed_rotation_deg, rotation_quality_ok);
+      if (last_rotation_commit_.commit) {
         const cv::Mat source_pose = use_short_baseline_rotation ? world_T_current_ :
           (use_anchor_rotation ? rotation_anchor_world_pose_ : temporal_reference_world_pose_);
         apply_temporal_rotation(source_pose);
@@ -2838,6 +2850,19 @@ private:
             last_relocalization_reject_reason_ = "pnp_geometry_rejected";
           }
         }
+        if (rotation_relocalization_mode_ == "stereo_relocalization" &&
+          !last_relocalization_accepted_)
+        {
+          // A rejected absolute check must not rebuild the reference: that is the
+          // silent rebootstrap this work removes. Keep R_pre and the gap open.
+          recovery_state_ = "rotation_gap_hold";
+          last_rotation_decision_ = "relocalization_rejected_hold";
+          rotation_settle_count_ = 0;
+          update_observability(current, stereo_points, temporal_matches, 0);
+          publish_status("rotation_waiting", stereo_points, temporal_matches, 0,
+            pair_delta_ms, elapsed_ms(started));
+          return;
+        }
         metric_keyframe_ = current;
         temporal_reference_ = current;
         set_rotation_anchor(current, world_T_current_);
@@ -2854,6 +2879,7 @@ private:
         rotation_settle_count_ = 0;
         rotation_wait_count_ = 0;
         ++rotation_rebootstrap_count_;
+        update_observability(current, stereo_points, temporal_matches, 0);
         publish_status("rebootstrap", stereo_points, temporal_matches, 0,
           pair_delta_ms, elapsed_ms(started));
       } else {
@@ -2863,7 +2889,8 @@ private:
             last_rotation_reject_reason_ = "rotation_observation_unavailable";
           }
         }
-        publish_status(settled ? "rotation_settling" : "rotation_waiting",
+        update_observability(current, stereo_points, temporal_matches, 0);
+      publish_status(settled ? "rotation_settling" : "rotation_waiting",
           stereo_points, temporal_matches, 0, pair_delta_ms, elapsed_ms(started));
       }
       return;
@@ -2880,6 +2907,7 @@ private:
       // the motion gap that rotation recovery is meant to bridge.
       maybe_refresh_reference(current, stereo_points, 0, pair_delta_ms, started,
         "insufficient_stereo_features");
+      update_observability(current, stereo_points, 0, 0);
       publish_status("insufficient_stereo_features", stereo_points, 0, 0, pair_delta_ms, elapsed_ms(started));
       return;
     }
@@ -3017,6 +3045,7 @@ private:
       }
       maybe_refresh_reference(current, stereo_points, static_cast<int>(object_points.size()),
         pair_delta_ms, started, "tracking_lost");
+      update_observability(current, stereo_points, static_cast<int>(object_points.size()), inlier_count);
       publish_status("tracking_lost", stereo_points, static_cast<int>(object_points.size()), inlier_count,
         pair_delta_ms, elapsed_ms(started));
       return;
@@ -3028,6 +3057,7 @@ private:
       ++consecutive_tracking_failures_;
       maybe_refresh_reference(current, stereo_points, static_cast<int>(object_points.size()),
         pair_delta_ms, started, "motion_outlier");
+      update_observability(current, stereo_points, static_cast<int>(object_points.size()), inlier_count);
       publish_status("motion_outlier", stereo_points, static_cast<int>(object_points.size()),
         inlier_count, pair_delta_ms, elapsed_ms(started));
       return;
@@ -3056,6 +3086,7 @@ private:
     yaw_update_source_ = "metric_transform";
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
+    update_observability(current, stereo_points, static_cast<int>(object_points.size()), inlier_count);
     if (observability_.measurement_valid()) {
       evaluate_submaps(current);
     } else {
@@ -3084,8 +3115,8 @@ private:
         world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
       }
     }
-    if (map_updates_enabled_ && last_keyframe_pose_ && should_insert_keyframe(world_T_current_,
-      std::max(inlier_count, rigid_inliers))) {
+    if (map_updates_enabled_ && observability_.measurement_valid() && last_keyframe_pose_ &&
+      should_insert_keyframe(world_T_current_, std::max(inlier_count, rigid_inliers))) {
       insert_keyframe(current, world_T_current_, trajectory_distance_);
       update_loaded_submaps();
     }
@@ -3182,7 +3213,6 @@ private:
     std_msgs::msg::String status;
     std::ostringstream data;
     const std::string switch_state = pending_switch_frames_ > 0 ? "confirming" : "stable";
-    update_observability(stereo_points, temporal_matches, pnp_inliers);
     data << "{\"state\":\"" << state << "\",\"stereo_points\":" << stereo_points
          << ",\"temporal_matches\":" << temporal_matches << ",\"pnp_inliers\":" << pnp_inliers
          << ",\"pair_delta_ms\":" << pair_delta_ms << ",\"processing_ms\":" << processing_ms
@@ -3362,6 +3392,12 @@ private:
          << ",\"short_baseline_matches\":" << last_short_baseline_matches_
          << ",\"short_baseline_inliers\":" << last_short_baseline_inliers_
          << ",\"short_baseline_yaw_deg\":" << last_short_baseline_yaw_deg_
+         << ",\"rotation_candidate_frames\":" << rotation_commit_.candidate_frames()
+         << ",\"rotation_commit_frames\":" << rotation_commit_.commit_frames()
+         << ",\"rotation_commit_sign\":" << last_rotation_commit_.sign
+         << ",\"rotation_commit_abs_deg\":" << last_rotation_commit_.frame_deg
+         << ",\"rotation_commit_pending_deg\":" << last_rotation_commit_.pending_deg
+         << ",\"rotation_commit_reason\":\"" << last_rotation_commit_.reason << "\""
          << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
          << ",\"evidence_features\":" << observability_.last_evidence().features
          << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
@@ -3530,6 +3566,9 @@ private:
   int relocalization_min_matches_{20};
   int relocalization_min_inliers_{12};
   int relocalization_search_period_{30};
+  visual_slam::RotationCommitConfig rotation_commit_config_{};
+  visual_slam::RotationCommitTracker rotation_commit_{};
+  visual_slam::RotationCommitDecision last_rotation_commit_{};
   int interval_frame_count_{0};
   int interval_accepted_frames_{0};
   int loop_check_period_frames_{};
