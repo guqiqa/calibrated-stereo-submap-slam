@@ -3093,7 +3093,32 @@ private:
     if (planar_motion_constraint_) {
       world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
     }
-    yaw_update_source_ = "metric_transform";
+    // Decouple translation from rotation on the metric path as well. The
+    // translation of this frame is always applied, while the published heading
+    // only moves when the confirmation window commits, so no single frame can
+    // change the heading on any path.
+    {
+      const double candidate_yaw_deg = std::atan2(
+        world_T_current_.at<double>(0, 2), world_T_current_.at<double>(2, 2)) * 180.0 / CV_PI;
+      if (!std::isfinite(last_candidate_yaw_deg_)) {
+        last_candidate_yaw_deg_ = candidate_yaw_deg;
+        committed_rotation_ = world_T_current_(cv::Rect(0, 0, 3, 3)).clone();
+      }
+      const double delta_rad = (candidate_yaw_deg - last_candidate_yaw_deg_) * CV_PI / 180.0;
+      const double yaw_increment_deg = std::atan2(std::sin(delta_rad), std::cos(delta_rad)) *
+        180.0 / CV_PI;
+      last_candidate_yaw_deg_ = candidate_yaw_deg;
+      const bool metric_measurement_ok =
+        inlier_count >= min_pnp_inliers_ || rigid_inliers >= min_3d3d_inliers_;
+      last_rotation_commit_ = rotation_commit_.update(yaw_increment_deg, metric_measurement_ok);
+      if (last_rotation_commit_.commit) {
+        committed_rotation_ = world_T_current_(cv::Rect(0, 0, 3, 3)).clone();
+      } else if (!committed_rotation_.empty()) {
+        committed_rotation_.copyTo(world_T_current_(cv::Rect(0, 0, 3, 3)));
+      }
+    }
+    yaw_update_source_ = last_rotation_commit_.commit ? "metric_transform_commit" :
+      "metric_transform_translation_only";
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     update_observability(current, stereo_points, static_cast<int>(object_points.size()), inlier_count);
@@ -3631,6 +3656,8 @@ private:
   double last_observability_closure_translation_m_{std::numeric_limits<double>::quiet_NaN()};
   std::optional<Frame> unobserved_entry_frame_{};
   std::optional<Frame> last_processed_frame_{};
+  double last_candidate_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  cv::Mat committed_rotation_;
   bool last_short_baseline_used_{false};
   bool last_measurement_accepted_{false};
   int last_short_baseline_matches_{0};
