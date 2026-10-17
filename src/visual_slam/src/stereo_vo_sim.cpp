@@ -1332,7 +1332,7 @@ private:
   LoopClosure detect_loop_closure(const Frame & frame) const
   {
     LoopClosure best;
-    if (!loop_closure_enabled_ || frame.descriptors.empty() || keyframes_.empty() ||
+    if (!loop_closure_enabled_ || frame.temporal_descriptors.empty() || keyframes_.empty() ||
       next_keyframe_id_ < loop_min_keyframe_gap_)
     {
       return best;
@@ -1345,7 +1345,11 @@ private:
         continue;
       }
       std::vector<std::vector<cv::DMatch>> candidates;
-      matcher_->knnMatch(keyframe.frame.descriptors, frame.descriptors, candidates, 2);
+      // Match against every current detection, not only the triangulated
+      // subset: during a degraded view only a handful of points survive stereo
+      // triangulation, but the 2D detections are still plentiful and are all the
+      // PnP (which takes its 3D points from the keyframe) needs.
+      matcher_->knnMatch(keyframe.frame.descriptors, frame.temporal_descriptors, candidates, 2);
       std::vector<cv::Point3f> object_points;
       std::vector<cv::Point2f> image_points;
       std::set<int> used_current_indices;
@@ -1356,9 +1360,14 @@ private:
         {
           continue;
         }
+        if (candidate[0].trainIdx < 0 ||
+          candidate[0].trainIdx >= static_cast<int>(frame.temporal_keypoints.size()))
+        {
+          continue;
+        }
         object_points.push_back(transform_point(keyframe.world_pose,
           keyframe.frame.points3d[candidate[0].queryIdx]));
-        image_points.push_back(frame.keypoints[candidate[0].trainIdx].pt);
+        image_points.push_back(frame.temporal_keypoints[candidate[0].trainIdx].pt);
       }
       if (static_cast<int>(object_points.size()) < loop_min_matches_) {
         continue;
