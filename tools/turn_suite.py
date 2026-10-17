@@ -63,10 +63,17 @@ def run_command(command: List[str], log_path: Path, cwd: Path) -> int:
 
 
 def stop_leftover_gazebo() -> None:
-    """Kill stale Gazebo processes so every attempt starts from a fresh world."""
-    for pattern in ("gzserver", "gzclient"):
-        subprocess.run(["pkill", "-f", pattern], check=False)
+    """Kill stale Gazebo processes so every attempt starts from a fresh world.
+
+    Uses an exact process-name match and SIGKILL: a stale gzserver can ignore
+    SIGTERM, and a substring match would also hit the caller command line.
+    """
+    for name in ("gzserver", "gzclient"):
+        subprocess.run(["pkill", "-9", "-x", name], check=False)
     time.sleep(1.5)
+    survivor = subprocess.run(["pgrep", "-x", "gzserver"], capture_output=True, text=True)
+    if survivor.stdout.strip():
+        print("[suite] WARNING a gzserver survived cleanup: " + survivor.stdout.strip(), flush=True)
 
 
 def experiment_command(args, mode: str, output: Path) -> List[str]:
