@@ -2778,17 +2778,16 @@ private:
         publish_status("rotation_only", stereo_points, temporal_matches, 0,
           pair_delta_ms, elapsed_ms(started));
       };
+    // One commit decision per frame, regardless of which path consumes it, so a
+    // single frame can never move the pose by rotation on its own.
+    const double signed_rotation_deg = temporal_rotation.empty() ? 0.0 :
+      std::atan2(temporal_rotation.at<double>(0, 2),
+      temporal_rotation.at<double>(2, 2)) * 180.0 / CV_PI;
+    last_rotation_commit_ = rotation_commit_.update(signed_rotation_deg, pure_rotation_model);
     if (in_rotation_recovery) {
       const bool anchor_gap_unresolved = rotation_anchor_gap_frames_ > 0 && !use_anchor_rotation;
       // A single frame never commits on its own. The wait counter no longer
       // decides acceptance; it only feeds the diagnostic log.
-      const double signed_rotation_deg = temporal_rotation.empty() ? 0.0 :
-        std::atan2(temporal_rotation.at<double>(0, 2),
-        temporal_rotation.at<double>(2, 2)) * 180.0 / CV_PI;
-      const bool rotation_quality_ok = pure_rotation_model &&
-        (!anchor_gap_unresolved || use_anchor_rotation || use_descriptor_temporal_rotation ||
-        use_short_baseline_rotation);
-      last_rotation_commit_ = rotation_commit_.update(signed_rotation_deg, rotation_quality_ok);
       if (last_rotation_commit_.commit) {
         // Apply the confirmed window (all frames since the last commit) as one
         // planar rotation at this frame; earlier frames keep their published pose.
@@ -2906,7 +2905,7 @@ private:
       return;
     }
     if (stereo_points < min_tracking_stereo_points_) {
-      if (pure_rotation_model && temporal_rotation_deg >= rotation_min_deg_) {
+      if (pure_rotation_model && last_rotation_commit_.commit) {
         apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
           temporal_reference_world_pose_, temporal_rotation);
         return;
@@ -3039,7 +3038,7 @@ private:
       (selected_transform.empty() ||
       (pose_translation(selected_transform) <= rotation_max_translation_m_ &&
       rotation_angle_deg(selected_transform) >= rotation_min_deg_));
-    if (rotation_dominant) {
+    if (rotation_dominant && last_rotation_commit_.commit) {
       apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
         temporal_reference_world_pose_, temporal_rotation);
       return;

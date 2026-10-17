@@ -103,9 +103,18 @@ def attribution_command(run_dir: Path, output_dir: Path, label: str, no_plot: bo
     return command
 
 
-def valid_run(run_dir: Path, min_status_messages: int) -> bool:
-    """A run is analysable only when the VO actually processed frames."""
-    summary = load_json(run_dir / "summary.json")
+def valid_run(run_dir: Path, min_status_messages: int, min_mtime: float = 0.0) -> bool:
+    """A run is analysable only when the VO actually processed frames.
+
+    min_mtime rejects results left over from an earlier attempt of the same
+    mode, which would otherwise be reused after a failed rerun.
+    """
+    summary_path = run_dir / "summary.json"
+    if not summary_path.exists():
+        return False
+    if summary_path.stat().st_mtime < min_mtime:
+        return False
+    summary = load_json(summary_path)
     if not summary:
         return False
     if int(summary.get("status_messages", 0)) < min_status_messages:
@@ -227,6 +236,7 @@ def main() -> int:
                 break
             if not args.keep_gazebo:
                 stop_leftover_gazebo()
+            attempt_started = time.time()
             command = experiment_command(args, mode, output)
             log_path = root / "logs" / (mode + ".log")
             started = time.time()
@@ -236,7 +246,9 @@ def main() -> int:
             print("[suite] " + mode + ": exit=%d, %.1f s, log=%s" % (code, time.time() - started, log_path),
                   flush=True)
             existing = sorted((runs_dir.glob("run_*") if runs_dir.exists() else []))
-            valid = [path for path in existing if valid_run(path, args.min_status_messages)]
+            # A failed rerun must not resurrect results from an earlier attempt.
+            valid = [path for path in existing
+                     if valid_run(path, args.min_status_messages, attempt_started)]
             if len(valid) >= args.runs:
                 break
             print("[suite] " + mode + ": only %d valid run(s) of %d, retrying" % (len(valid), args.runs),
