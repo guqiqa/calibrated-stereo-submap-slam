@@ -62,6 +62,13 @@ def run_command(command: List[str], log_path: Path, cwd: Path) -> int:
         return subprocess.run(command, cwd=str(cwd), stdout=handle, stderr=subprocess.STDOUT).returncode
 
 
+def stop_leftover_gazebo() -> None:
+    """Kill stale Gazebo processes so every attempt starts from a fresh world."""
+    for pattern in ("gzserver", "gzclient"):
+        subprocess.run(["pkill", "-f", pattern], check=False)
+    time.sleep(1.5)
+
+
 def experiment_command(args, mode: str, output: Path) -> List[str]:
     command = [
         "ros2", "run", "visual_slam_gazebo", "run_experiment_profile.py",
@@ -176,6 +183,10 @@ def main() -> int:
                         help="retry the whole mode when too few runs produced data")
     parser.add_argument("--min-status-messages", type=int, default=100,
                         help="a run with fewer VO status messages counts as dead")
+    parser.add_argument("--keep-gazebo", action="store_true",
+                        help="do not kill stale Gazebo processes before an attempt")
+    parser.add_argument("--timeout-min", type=float, default=45.0,
+                        help="budget per mode; remaining attempts are skipped past it")
     args = parser.parse_args()
     if args.runs < 1:
         raise SystemExit("--runs must be >= 1")
@@ -193,13 +204,22 @@ def main() -> int:
         runs_dir = output / "c0"
         attempt = 0
         valid: List[Path] = []
+        per_attempt_min = args.runs * (args.duration + 50.0) / 60.0
+        deadline = time.time() + args.timeout_min * 60.0
+        print("[suite] " + mode + ": budget %.0f min, about %.0f min per attempt, up to %d attempt(s)" % (
+            args.timeout_min, per_attempt_min, args.max_attempts), flush=True)
         while attempt < args.max_attempts:
             attempt += 1
+            if time.time() > deadline:
+                print("[suite] " + mode + ": budget exhausted, stopping", flush=True)
+                break
             existing = sorted(runs_dir.glob("run_*")) if runs_dir.exists() else []
             valid = [path for path in existing if valid_run(path, args.min_status_messages)]
             if len(valid) >= args.runs and not args.force:
                 print("[suite] " + mode + ": reuse " + str(len(valid)) + " valid run(s)", flush=True)
                 break
+            if not args.keep_gazebo:
+                stop_leftover_gazebo()
             command = experiment_command(args, mode, output)
             log_path = root / "logs" / (mode + ".log")
             started = time.time()

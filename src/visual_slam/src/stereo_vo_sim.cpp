@@ -1155,9 +1155,17 @@ private:
     const visual_slam::VisualState previous = observability_.state();
     observability_.update(evidence);
     const visual_slam::VisualState current_state = observability_.state();
+    if (current_state == visual_slam::VisualState::kUnobserved) {
+      ++interval_frame_count_;
+      if (last_measurement_accepted_) {
+        ++interval_accepted_frames_;
+      }
+    }
     if (current_state == visual_slam::VisualState::kUnobserved &&
       previous != visual_slam::VisualState::kUnobserved && temporal_reference_)
     {
+      interval_frame_count_ = 1;
+      interval_accepted_frames_ = last_measurement_accepted_ ? 1 : 0;
       // R_pre snapshot: the last frame that still produced a trusted estimate.
       unobserved_entry_frame_ = *temporal_reference_;
       unobserved_entry_world_pose_ = temporal_reference_world_pose_.clone();
@@ -1217,6 +1225,17 @@ private:
         last_observability_closure_translation_m_ = closure_translation_m;
         observability_.finalize_interval(visual_slam::IntervalCloseReason::kAnchorValidation,
           closure_translation_m, closure_rotation_deg, -1);
+      } else if (interval_frame_count_ > 0 &&
+        interval_accepted_frames_ * 10 >= interval_frame_count_ * 9)
+      {
+        // No independent reference is available (a reversed view cannot match
+        // the map with ORB descriptors), but the short-baseline chain stayed
+        // continuous: close the interval as bridged and report the closure as
+        // not independently measurable instead of leaving it silently open.
+        observability_.finalize_interval(
+          visual_slam::IntervalCloseReason::kIncrementBridge,
+          std::numeric_limits<double>::quiet_NaN(),
+          std::numeric_limits<double>::quiet_NaN(), -1);
       }
       // The absolute bracket may only become available once the robot drives
       // back into a mapped view, so an unresolved interval keeps searching.
@@ -3511,6 +3530,8 @@ private:
   int relocalization_min_matches_{20};
   int relocalization_min_inliers_{12};
   int relocalization_search_period_{30};
+  int interval_frame_count_{0};
+  int interval_accepted_frames_{0};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};
   int loop_min_matches_{};
