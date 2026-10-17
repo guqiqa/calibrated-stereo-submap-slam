@@ -89,6 +89,11 @@ if(BUILD_TESTING)
   target_link_libraries(geometry_test PRIVATE ${OpenCV_LIBS})
   add_test(NAME geometry_test COMMAND geometry_test)
 
+  add_executable(heading_state_test test/heading_state_test.cpp)
+  target_compile_features(heading_state_test PRIVATE cxx_std_17)
+  target_include_directories(heading_state_test PRIVATE include)
+  add_test(NAME heading_state_test COMMAND heading_state_test)
+
   add_executable(observability_test test/observability_test.cpp)
   target_compile_features(observability_test PRIVATE cxx_std_17)
   target_include_directories(observability_test PRIVATE include)
