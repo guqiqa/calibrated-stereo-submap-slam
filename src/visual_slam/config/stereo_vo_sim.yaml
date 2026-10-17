@@ -58,6 +58,9 @@ stereo_vo_sim:
     loop_closure_apply_correction: false
     rotation_relocalization_mode: pure_stereo
     rotation_relocalization_max_pose_jump_m: 2.0
+    relocalization_min_keyframe_gap: 2
+    relocalization_min_matches: 20
+    relocalization_min_inliers: 12
     loop_check_period_frames: 15
     loop_min_keyframe_gap: 8
     loop_min_matches: 35

@@ -172,6 +172,10 @@ public:
       "rotation_relocalization_mode", "pure_stereo");
     rotation_relocalization_max_pose_jump_m_ = declare_parameter<double>(
       "rotation_relocalization_max_pose_jump_m", 2.0);
+    relocalization_min_keyframe_gap_ = declare_parameter<int>(
+      "relocalization_min_keyframe_gap", 2);
+    relocalization_min_matches_ = declare_parameter<int>("relocalization_min_matches", 20);
+    relocalization_min_inliers_ = declare_parameter<int>("relocalization_min_inliers", 12);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -1181,10 +1185,16 @@ private:
       visual_slam::IntervalCloseReason close_reason =
         visual_slam::IntervalCloseReason::kAnchorValidation;
       last_relocalization_attempted_ = true;
-      const LoopClosure relocalization = detect_loop_closure(*temporal_reference_);
+      int candidate_matches = 0;
+      int candidate_inliers = 0;
+      const LoopClosure relocalization = detect_loop_closure(*temporal_reference_,
+        relocalization_min_keyframe_gap_, relocalization_min_matches_,
+        relocalization_min_inliers_, &candidate_matches, &candidate_inliers);
       last_relocalization_keyframe_id_ = relocalization.keyframe_id;
-      last_relocalization_matches_ = relocalization.matches;
-      last_relocalization_inliers_ = relocalization.inliers;
+      last_relocalization_matches_ = relocalization.accepted ?
+        relocalization.matches : candidate_matches;
+      last_relocalization_inliers_ = relocalization.accepted ?
+        relocalization.inliers : candidate_inliers;
       last_relocalization_reprojection_rmse_ = relocalization.reprojection_rmse;
       if (relocalization.accepted && !relocalization.corrected_pose.empty()) {
         last_relocalization_pose_jump_m_ = pose_distance(
@@ -1329,18 +1339,27 @@ private:
     return true;
   }
 
-  LoopClosure detect_loop_closure(const Frame & frame) const
+  // min_gap / min_matches / min_inliers default to the loop-closure settings;
+  // the reacquisition path passes its own, looser values because the goal there
+  // is an absolute pose rather than a non-trivial loop detection.
+  LoopClosure detect_loop_closure(const Frame & frame, int min_gap = -1,
+    int min_matches = -1, int min_inliers = -1, int * candidate_matches = nullptr,
+    int * candidate_inliers = nullptr) const
   {
     LoopClosure best;
+    const int gap = min_gap >= 0 ? min_gap : loop_min_keyframe_gap_;
+    const int required_matches = min_matches >= 0 ? min_matches : loop_min_matches_;
+    const int required_inliers = min_inliers >= 0 ? min_inliers : loop_min_inliers_;
+    int best_candidate_matches = 0;
+    int best_candidate_inliers = 0;
     if (!loop_closure_enabled_ || frame.temporal_descriptors.empty() || keyframes_.empty() ||
-      next_keyframe_id_ < loop_min_keyframe_gap_)
+      next_keyframe_id_ < gap)
     {
       return best;
     }
     for (const auto & entry : keyframes_) {
       const Keyframe & keyframe = entry.second;
-      if (keyframe.id + loop_min_keyframe_gap_ >= next_keyframe_id_ ||
-        keyframe.frame.descriptors.empty())
+      if (keyframe.id + gap >= next_keyframe_id_ || keyframe.frame.descriptors.empty())
       {
         continue;
       }
@@ -1369,7 +1388,9 @@ private:
           keyframe.frame.points3d[candidate[0].queryIdx]));
         image_points.push_back(frame.temporal_keypoints[candidate[0].trainIdx].pt);
       }
-      if (static_cast<int>(object_points.size()) < loop_min_matches_) {
+      best_candidate_matches = std::max(best_candidate_matches,
+        static_cast<int>(object_points.size()));
+      if (static_cast<int>(object_points.size()) < required_matches) {
         continue;
       }
       cv::Mat rotation_vector;
@@ -1378,7 +1399,8 @@ private:
       const bool ok = cv::solvePnPRansac(object_points, image_points, rectified_k_, cv::Mat(),
         rotation_vector, translation_vector, false, 150, loop_max_reprojection_px_, 0.99,
         inliers, cv::SOLVEPNP_ITERATIVE);
-      if (!ok || inliers.rows < loop_min_inliers_ || inliers.rows <= best.inliers) {
+      best_candidate_inliers = std::max(best_candidate_inliers, ok ? inliers.rows : 0);
+      if (!ok || inliers.rows < required_inliers || inliers.rows <= best.inliers) {
         continue;
       }
       cv::Mat rotation;
@@ -1401,6 +1423,12 @@ private:
     }
     if (best.accepted && best.reprojection_rmse > loop_max_reprojection_px_) {
       best.accepted = false;
+    }
+    if (candidate_matches != nullptr) {
+      *candidate_matches = best_candidate_matches;
+    }
+    if (candidate_inliers != nullptr) {
+      *candidate_inliers = best_candidate_inliers;
     }
     return best;
   }
@@ -3430,6 +3458,9 @@ private:
   bool loop_closure_apply_correction_{false};
   std::string rotation_relocalization_mode_{"pure_stereo"};
   double rotation_relocalization_max_pose_jump_m_{2.0};
+  int relocalization_min_keyframe_gap_{2};
+  int relocalization_min_matches_{20};
+  int relocalization_min_inliers_{12};
   int loop_check_period_frames_{};
   int loop_min_keyframe_gap_{};
   int loop_min_matches_{};
