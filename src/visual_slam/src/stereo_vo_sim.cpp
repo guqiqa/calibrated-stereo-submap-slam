@@ -3232,6 +3232,16 @@ private:
     // The metric keyframe is held for a short reference window, so selected_transform
     // already represents current_T_reference and must not be multiplied by
     // estimates from earlier frames in the same window.
+    // Per-frame heading diagnostics: the estimator output, the reference pose it
+    // is relative to, and the composed world heading. Comparing the three shows
+    // whether a rotation is lost or inverted in the estimator or in the compose.
+    last_selected_yaw_deg_ = heading_deg_of(selected_transform);
+    last_pnp_yaw_deg_ = pnp_ok ? heading_deg_of(pnp_transform) :
+      std::numeric_limits<double>::quiet_NaN();
+    last_rigid_yaw_deg_ = rigid_ok ? heading_deg_of(rigid_transform_estimate) :
+      std::numeric_limits<double>::quiet_NaN();
+    last_reference_yaw_deg_ = heading_deg_of(reference_world_pose_);
+    last_reference_age_ = reference_age_;
     world_T_current_ = visual_slam::compose_world_pose_from_current_T_previous(
       reference_world_pose_, selected_transform);
     if (planar_motion_constraint_) {
@@ -3599,6 +3609,11 @@ private:
          << ",\"published_heading_deg\":" << heading_state_.committed_deg()
          << ",\"heading_projection_error_deg\":" << visual_slam::wrap_deg_180(
            heading_deg_of(world_T_current_) - heading_state_.committed_deg())
+         << ",\"selected_transform_yaw_deg\":" << json_number(last_selected_yaw_deg_)
+         << ",\"pnp_transform_yaw_deg\":" << json_number(last_pnp_yaw_deg_)
+         << ",\"rigid_transform_yaw_deg\":" << json_number(last_rigid_yaw_deg_)
+         << ",\"reference_world_yaw_deg\":" << json_number(last_reference_yaw_deg_)
+         << ",\"reference_age_frames\":" << last_reference_age_
          << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
          << ",\"evidence_features\":" << observability_.last_evidence().features
          << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
@@ -3848,6 +3863,11 @@ private:
   int queue_trim_drops_{0};
   int sync_rejects_{0};
   double last_sync_reject_delta_ms_{0.0};
+  double last_selected_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  double last_pnp_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  double last_rigid_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  double last_reference_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  int last_reference_age_{0};
   int tracking_failures_{0};
   int consecutive_tracking_failures_{0};
   int rotation_settle_count_{0};
