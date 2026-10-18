@@ -1186,6 +1186,24 @@ private:
       static_cast<std::int64_t>(processed_frames_), reason);
   }
 
+  // Heading carried by the pose the map and the retrieval use. It is written by
+  // the pose pipeline, never by the publication path.
+  double last_keyframe_heading_deg() const
+  {
+    return last_keyframe_pose_ ? heading_deg_of(*last_keyframe_pose_) :
+      std::numeric_limits<double>::quiet_NaN();
+  }
+
+  double active_submap_center_heading_deg() const
+  {
+    for (const auto & submap : submaps_) {
+      if (submap.id == active_submap_id_) {
+        return heading_deg_of(submap.center_pose);
+      }
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
   static visual_slam::ObservabilityMode to_observability_mode(const std::string & name)
   {
     if (name == "b1_flag") {
@@ -1691,6 +1709,9 @@ private:
     keyframe.id = next_keyframe_id_++;
     keyframe.distance = distance;
     keyframe.world_pose = world_pose.clone();
+    // Recorded so the log can prove the map took the pose chain that was current
+    // at insertion, instead of comparing against a later (stale) pose.
+    last_keyframe_insert_heading_deg_ = heading_deg_of(keyframe.world_pose);
     keyframe.frame = frame;
     keyframe.frame.left_image.release();
     keyframes_[keyframe.id] = keyframe;
@@ -3549,6 +3570,18 @@ private:
          << ",\"heading_duplicate_count\":" << heading_state_.duplicate_count()
          << ",\"heading_conserved\":" << (heading_state_.conservation_ok(1.0e-3) ? "true" : "false")
          << ",\"heading_update_reason\":\"" << last_heading_update_.reason << "\""
+         // The pose pipeline (mapping, keyframes, submap centres, retrieval and
+         // switching) runs on the measured heading, while odometry_sim publishes
+         // the committed one. That split is an explicit experimental mode, not an
+         // accident, so both sides and their difference are logged every frame.
+         << ",\"pose_mode\":\"measured_internal/committed_output\""
+         << ",\"internal_pose_heading_deg\":" << heading_deg_of(world_T_current_)
+         << ",\"keyframe_heading_deg\":" << json_number(last_keyframe_heading_deg())
+         << ",\"keyframe_insert_heading_deg\":" << json_number(last_keyframe_insert_heading_deg_)
+         << ",\"submap_center_heading_deg\":" << json_number(active_submap_center_heading_deg())
+         << ",\"published_heading_deg\":" << heading_state_.committed_deg()
+         << ",\"heading_projection_error_deg\":" << visual_slam::wrap_deg_180(
+           heading_deg_of(world_T_current_) - heading_state_.committed_deg())
          << ",\"relocalization_required\":" << (observability_.relocalization_required() ? "true" : "false")
          << ",\"evidence_features\":" << observability_.last_evidence().features
          << ",\"evidence_inliers\":" << observability_.last_evidence().inliers
@@ -3900,6 +3933,7 @@ private:
   std::string last_reject_reason_;
   cv::Mat smooth_target_pose_;
   std::optional<cv::Mat> last_keyframe_pose_;
+  double last_keyframe_insert_heading_deg_{std::numeric_limits<double>::quiet_NaN()};
   Submap global_map_;
   std::map<int, Keyframe> keyframes_;
   std::vector<Submap> submaps_;
