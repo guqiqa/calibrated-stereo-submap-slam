@@ -359,6 +359,8 @@ public:
     // fixed set of known poses and the image callbacks above drop every frame, so
     // the visual update cannot overwrite the injected pose.
     debug_pose_injection_ = declare_parameter<bool>("debug_pose_injection", false);
+    debug_dump_pnp_frame_ = declare_parameter<bool>("debug_dump_pnp_frame", false);
+    debug_dump_path_ = declare_parameter<std::string>("debug_dump_path", "/tmp/pnp_frame.json");
     if (debug_pose_injection_) {
       sim_odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
         "/sim/odom", 10, [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
@@ -3235,6 +3237,15 @@ private:
       std::numeric_limits<double>::quiet_NaN();
     last_rigid_yaw_deg_ = rigid_ok ? heading_deg_of(rigid_transform_estimate) :
       std::numeric_limits<double>::quiet_NaN();
+    // Debug-only: keep the PnP frame carrying the largest rotation seen so far,
+    // with every input needed to replay the solve offline in runtime order.
+    if (debug_dump_pnp_frame_ && pnp_ok &&
+      std::abs(last_pnp_yaw_deg_) > debug_dump_best_yaw_deg_)
+    {
+      debug_dump_best_yaw_deg_ = std::abs(last_pnp_yaw_deg_);
+      dump_pnp_frame(object_points, image_points, pnp_transform,
+        rigid_transform_estimate, inlier_count);
+    }
     last_reference_yaw_deg_ = heading_deg_of(reference_world_pose_);
     last_reference_age_ = reference_age_;
     world_T_current_ = visual_slam::compose_world_pose_from_current_T_previous(
@@ -3352,6 +3363,72 @@ private:
     publish_status("rebootstrap", stereo_points, match_count, 0,
       pair_delta_ms, elapsed_ms(started));
     (void)reason;
+  }
+
+  static void write_matrix_json(std::ostream & out, const cv::Mat & matrix)
+  {
+    out << "[";
+    for (int row = 0; row < matrix.rows; ++row) {
+      if (row) {
+        out << ",";
+      }
+      for (int column = 0; column < matrix.cols; ++column) {
+        if (column) {
+          out << ",";
+        }
+        out << matrix.at<double>(row, column);
+      }
+    }
+    out << "]";
+  }
+
+  // Debug-only: dump one PnP frame with every input needed to replay the solve
+  // offline in the same order the node uses at runtime.
+  void dump_pnp_frame(const std::vector<cv::Point3f> & object_points,
+    const std::vector<cv::Point2f> & image_points, const cv::Mat & pnp_transform,
+    const cv::Mat & rigid_transform, int inliers) const
+  {
+    std::ofstream out(debug_dump_path_, std::ios::trunc);
+    if (!out) {
+      return;
+    }
+    out.precision(17);
+    out << "{\"rectified_k\":";
+    write_matrix_json(out, rectified_k_);
+    out << ",\"p1\":";
+    write_matrix_json(out, p1_);
+    out << ",\"p2\":";
+    write_matrix_json(out, p2_);
+    out << ",\"object_points\":[";
+    for (std::size_t index = 0; index < object_points.size(); ++index) {
+      if (index) {
+        out << ",";
+      }
+      out << "[" << object_points[index].x << "," << object_points[index].y << ","
+          << object_points[index].z << "]";
+    }
+    out << "],\"image_points\":[";
+    for (std::size_t index = 0; index < image_points.size(); ++index) {
+      if (index) {
+        out << ",";
+      }
+      out << "[" << image_points[index].x << "," << image_points[index].y << "]";
+    }
+    out << "],\"pnp_transform\":";
+    write_matrix_json(out, pnp_transform);
+    out << ",\"rigid_transform\":";
+    if (rigid_transform.empty()) {
+      out << "[]";
+    } else {
+      write_matrix_json(out, rigid_transform);
+    }
+    out << ",\"reference_world_pose\":";
+    write_matrix_json(out, reference_world_pose_);
+    out << ",\"inliers\":" << inliers;
+    out << ",\"motion_source\":\"" << motion_source_ << "\"";
+    out << "}";
+    RCLCPP_INFO(get_logger(), "debug_dump_pnp_frame wrote %s (%zu points)",
+      debug_dump_path_.c_str(), object_points.size());
   }
 
   // Debug-only: drive a fixed sequence of known optical poses through the real
@@ -3934,6 +4011,9 @@ private:
   bool baseline_parameter_declared_{false};
   bool calibration_ready_{false};
   bool debug_pose_injection_{false};
+  bool debug_dump_pnp_frame_{false};
+  double debug_dump_best_yaw_deg_{0.0};
+  std::string debug_dump_path_;
   int debug_injection_step_{0};
   int debug_injection_tick_{0};
   double last_sim_odom_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
