@@ -361,6 +361,9 @@ public:
     debug_pose_injection_ = declare_parameter<bool>("debug_pose_injection", false);
     debug_dump_pnp_frame_ = declare_parameter<bool>("debug_dump_pnp_frame", false);
     debug_dump_path_ = declare_parameter<std::string>("debug_dump_path", "/tmp/pnp_frame.json");
+    debug_trace_metric_frames_ = declare_parameter<int>("debug_trace_metric_frames", 0);
+    debug_trace_remaining_ = debug_trace_metric_frames_;
+    debug_trace_path_ = declare_parameter<std::string>("debug_trace_path", "/tmp/metric_trace.jsonl");
     if (debug_pose_injection_) {
       sim_odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
         "/sim/odom", 10, [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
@@ -3255,6 +3258,11 @@ private:
     if (planar_motion_constraint_) {
       world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
     }
+    if (debug_trace_remaining_ > 0) {
+      --debug_trace_remaining_;
+      trace_metric_frame(reference_world_pose_, selected_transform, pnp_transform,
+        rigid_transform_estimate, world_T_current_);
+    }
     // Reaching this point means the main path accepted this transform (non-empty,
     // not a motion outlier, consistent). The candidate is valid by construction;
     // no second inlier gate is applied here.
@@ -3439,6 +3447,40 @@ private:
     out << "}";
     RCLCPP_INFO(get_logger(), "debug_dump_pnp_frame wrote %s (%zu points)",
       debug_dump_path_.c_str(), object_points.size());
+  }
+
+  // Debug-only: record the first metric frames so the sign can be located at the
+  // exact assignment that introduces it, instead of being inferred later.
+  void trace_metric_frame(const cv::Mat & reference_pose, const cv::Mat & selected,
+    const cv::Mat & pnp, const cv::Mat & rigid, const cv::Mat & composed) const
+  {
+    std::ofstream out(debug_trace_path_, std::ios::app);
+    if (!out) {
+      return;
+    }
+    out.precision(17);
+    out << "{\"frame_index\":" << processed_frames_
+        << ",\"recovery_state\":\"" << recovery_state_ << "\""
+        << ",\"motion_source\":\"" << motion_source_ << "\""
+        << ",\"reference_age\":" << reference_age_
+        << ",\"reference_yaw_deg\":" << heading_deg_of(reference_pose)
+        << ",\"selected_yaw_deg\":" << heading_deg_of(selected)
+        << ",\"pnp_yaw_deg\":" << (pnp.empty() ? 0.0 : heading_deg_of(pnp))
+        << ",\"rigid_yaw_deg\":" << (rigid.empty() ? 0.0 : heading_deg_of(rigid))
+        << ",\"composed_yaw_deg\":" << heading_deg_of(composed)
+        << ",\"reference_pose\":";
+    write_matrix_json(out, reference_pose);
+    out << ",\"selected_transform\":";
+    write_matrix_json(out, selected);
+    out << ",\"pnp_transform\":";
+    if (pnp.empty()) {
+      out << "[]";
+    } else {
+      write_matrix_json(out, pnp);
+    }
+    out << ",\"composed_pose\":";
+    write_matrix_json(out, composed);
+    out << "}\n";
   }
 
   // Debug-only: drive a fixed sequence of known optical poses through the real
@@ -4024,6 +4066,9 @@ private:
   bool debug_dump_pnp_frame_{false};
   double debug_dump_best_yaw_deg_{0.0};
   std::string debug_dump_path_;
+  int debug_trace_metric_frames_{0};
+  int debug_trace_remaining_{0};
+  std::string debug_trace_path_;
   int debug_injection_step_{0};
   int debug_injection_tick_{0};
   double last_sim_odom_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
