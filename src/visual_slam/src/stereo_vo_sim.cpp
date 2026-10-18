@@ -2607,6 +2607,7 @@ private:
   {
     const auto started = std::chrono::steady_clock::now();
     ++processed_frames_;
+    last_straight_constraint_applied_ = false;
     const std::optional<Frame> previous_frame = last_processed_frame_;
     last_measurement_accepted_ = false;
     Frame current = make_stereo_frame(left, right);
@@ -2848,13 +2849,17 @@ private:
         cv::Mat current_T_temporal = cv::Mat::eye(4, 4, CV_64F);
         rotation.copyTo(current_T_temporal(cv::Rect(0, 0, 3, 3)));
         const cv::Mat pose_increment = current_T_temporal.inv();
+        // compose(A, B) applies A * B^-1, so the pose advance is the inverse of the
+        // estimated rotation. Passing the inverse here is what makes a left turn
+        // decrease the optical heading, matching the metric path.
         const double applied_yaw_deg = std::atan2(
-          pose_increment.at<double>(0, 2), pose_increment.at<double>(2, 2)) * 180.0 / CV_PI;
+          current_T_temporal.at<double>(0, 2), current_T_temporal.at<double>(2, 2)) *
+          180.0 / CV_PI;
         if (!in_rotation_recovery) {
           rotation_episode_yaw_deg_ = 0.0;
         }
         world_T_current_ = visual_slam::compose_world_pose_from_current_T_previous(
-          source_world_pose, current_T_temporal);
+          source_world_pose, pose_increment);
         if (planar_motion_constraint_) {
           world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
         }
