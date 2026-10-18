@@ -169,6 +169,48 @@ void test_metric_and_recovery_alternation()
   expect_true(!after.commit, "no autonomous drift after the commit");
 }
 
+void test_translation_uses_committed_heading()
+{
+  visual_slam::GroundPose pose;
+  pose.x = 0.0;
+  pose.y = 0.0;
+  pose.heading_deg = 0.0;
+
+  // A body-frame forward step at heading 0 goes along +x.
+  auto straight = visual_slam::advance_ground_pose(pose, 0.0, 1.0, 0.0);
+  expect_near(straight.x, 1.0, 1e-9, "forward step at zero heading");
+  expect_near(straight.y, 0.0, 1e-9, "no lateral drift at zero heading");
+
+  // The same step after a committed 90 degree turn goes along +y.
+  auto turned = visual_slam::advance_ground_pose(pose, 90.0, 1.0, 0.0);
+  expect_near(turned.x, 0.0, 1e-9, "turned step has no x component");
+  expect_near(turned.y, 1.0, 1e-9, "turned step goes along +y");
+  expect_near(turned.heading_deg, 90.0, 1e-9, "the committed heading is stored");
+
+  // A pending candidate heading must not influence the translation.
+  HeadingState state;
+  state.reset(0.0);
+  state.propose(candidate(1, 90.0, false));   // rejected candidate
+  const auto after_reject = visual_slam::advance_ground_pose(pose, state.committed_deg(), 1.0, 0.0);
+  expect_near(after_reject.y, 0.0, 1e-9, "a rejected candidate never rotates the translation");
+  expect_near(after_reject.x, 1.0, 1e-9, "translation follows the committed heading only");
+}
+
+void test_turn_composition_order()
+{
+  // Turning first and then translating must differ from translating first.
+  visual_slam::GroundPose pose;
+  auto turn_then_move = visual_slam::advance_ground_pose(pose, 90.0, 1.0, 0.0);
+  expect_near(turn_then_move.x, 0.0, 1e-9, "turn then move: x unchanged");
+  expect_near(turn_then_move.y, 1.0, 1e-9, "turn then move: moved along +y");
+
+  auto move_then_turn = visual_slam::advance_ground_pose(pose, 0.0, 1.0, 0.0);
+  expect_near(move_then_turn.x, 1.0, 1e-9, "move then turn: moved along +x");
+  expect_near(move_then_turn.y, 0.0, 1e-9, "move then turn: y unchanged");
+  expect_true(std::abs(turn_then_move.x - move_then_turn.x) > 1e-6,
+    "the composition order is observable and must stay explicit");
+}
+
 }  // namespace
 
 int main()
@@ -182,6 +224,8 @@ int main()
   test_implausible_jump_rejected();
   test_absolute_write_is_explicit();
   test_metric_and_recovery_alternation();
+  test_translation_uses_committed_heading();
+  test_turn_composition_order();
 
   std::cout << "checks=" << checks << " failures=" << failures << std::endl;
   return failures == 0 ? 0 : 1;

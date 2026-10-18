@@ -219,4 +219,32 @@ private:
   int absolute_count_{0};
 };
 
+// Ground-plane pose used by the decoupled update.
+//
+// Translation is expressed in the world frame and is composed with the
+// COMMITTED heading, never with the pending candidate: a heading that has not
+// been confirmed must not move the position.
+struct GroundPose
+{
+  double x{0.0};
+  double y{0.0};
+  double heading_deg{0.0};
+};
+
+// Applies a body-frame translation increment (metres) using the committed
+// heading, then stores the committed heading. The candidate heading is ignored
+// by design.
+inline GroundPose advance_ground_pose(
+  const GroundPose & pose, double committed_heading_deg, double dx_body, double dy_body)
+{
+  const double heading_rad = committed_heading_deg * M_PI / 180.0;
+  const double cosine = std::cos(heading_rad);
+  const double sine = std::sin(heading_rad);
+  GroundPose next;
+  next.x = pose.x + cosine * dx_body - sine * dy_body;
+  next.y = pose.y + sine * dx_body + cosine * dy_body;
+  next.heading_deg = wrap_deg_180(committed_heading_deg);
+  return next;
+}
+
 }  // namespace visual_slam
