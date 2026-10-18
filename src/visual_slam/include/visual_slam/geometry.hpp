@@ -230,4 +230,52 @@ inline cv::Mat bearing_correspondences_to_planar_rotation(
     -sine, 0.0, cosine);
 }
 
+// Quaternion (x, y, z, w) of a rotation matrix.
+//
+// Shared by the odometry publisher and the convention tests so that both read
+// the same numbers; the node only wraps the result in its message type.
+inline cv::Vec4d rotation_to_quaternion_xyzw(const cv::Mat & rotation)
+{
+  const double r00 = rotation.at<double>(0, 0);
+  const double r01 = rotation.at<double>(0, 1);
+  const double r02 = rotation.at<double>(0, 2);
+  const double r10 = rotation.at<double>(1, 0);
+  const double r11 = rotation.at<double>(1, 1);
+  const double r12 = rotation.at<double>(1, 2);
+  const double r20 = rotation.at<double>(2, 0);
+  const double r21 = rotation.at<double>(2, 1);
+  const double r22 = rotation.at<double>(2, 2);
+  double x = 0.0;
+  double y = 0.0;
+  double z = 0.0;
+  double w = 1.0;
+  const double trace = r00 + r11 + r22;
+  if (trace > 0.0) {
+    const double s = 2.0 * std::sqrt(trace + 1.0);
+    w = 0.25 * s;
+    x = (r21 - r12) / s;
+    y = (r02 - r20) / s;
+    z = (r10 - r01) / s;
+  } else if (r00 > r11 && r00 > r22) {
+    const double s = 2.0 * std::sqrt(1.0 + r00 - r11 - r22);
+    w = (r21 - r12) / s;
+    x = 0.25 * s;
+    y = (r01 + r10) / s;
+    z = (r02 + r20) / s;
+  } else if (r11 > r22) {
+    const double s = 2.0 * std::sqrt(1.0 + r11 - r00 - r22);
+    w = (r02 - r20) / s;
+    x = (r01 + r10) / s;
+    y = 0.25 * s;
+    z = (r12 + r21) / s;
+  } else {
+    const double s = 2.0 * std::sqrt(1.0 + r22 - r00 - r11);
+    w = (r10 - r01) / s;
+    x = (r02 + r20) / s;
+    y = (r12 + r21) / s;
+    z = 0.25 * s;
+  }
+  return cv::Vec4d(x, y, z, w);
+}
+
 }  // namespace visual_slam

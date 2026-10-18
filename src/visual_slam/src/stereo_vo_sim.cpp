@@ -46,43 +46,15 @@ int64_t stamp_ns(const builtin_interfaces::msg::Time & stamp)
 
 geometry_msgs::msg::Quaternion rotation_to_quaternion(const cv::Mat & rotation)
 {
-  const double r00 = rotation.at<double>(0, 0);
-  const double r01 = rotation.at<double>(0, 1);
-  const double r02 = rotation.at<double>(0, 2);
-  const double r10 = rotation.at<double>(1, 0);
-  const double r11 = rotation.at<double>(1, 1);
-  const double r12 = rotation.at<double>(1, 2);
-  const double r20 = rotation.at<double>(2, 0);
-  const double r21 = rotation.at<double>(2, 1);
-  const double r22 = rotation.at<double>(2, 2);
-  geometry_msgs::msg::Quaternion q;
-  const double trace = r00 + r11 + r22;
-  if (trace > 0.0) {
-    const double s = 2.0 * std::sqrt(trace + 1.0);
-    q.w = 0.25 * s;
-    q.x = (r21 - r12) / s;
-    q.y = (r02 - r20) / s;
-    q.z = (r10 - r01) / s;
-  } else if (r00 > r11 && r00 > r22) {
-    const double s = 2.0 * std::sqrt(1.0 + r00 - r11 - r22);
-    q.w = (r21 - r12) / s;
-    q.x = 0.25 * s;
-    q.y = (r01 + r10) / s;
-    q.z = (r02 + r20) / s;
-  } else if (r11 > r22) {
-    const double s = 2.0 * std::sqrt(1.0 + r11 - r00 - r22);
-    q.w = (r02 - r20) / s;
-    q.x = (r01 + r10) / s;
-    q.y = 0.25 * s;
-    q.z = (r12 + r21) / s;
-  } else {
-    const double s = 2.0 * std::sqrt(1.0 + r22 - r00 - r11);
-    q.w = (r10 - r01) / s;
-    q.x = (r02 + r20) / s;
-    q.y = (r12 + r21) / s;
-    q.z = 0.25 * s;
-  }
-  return q;
+  // Single implementation lives in geometry.hpp so the convention tests and the
+  // publisher cannot drift apart.
+  const cv::Vec4d values = visual_slam::rotation_to_quaternion_xyzw(rotation);
+  geometry_msgs::msg::Quaternion message;
+  message.x = values[0];
+  message.y = values[1];
+  message.z = values[2];
+  message.w = values[3];
+  return message;
 }
 }  // namespace
 

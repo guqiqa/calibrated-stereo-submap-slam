@@ -225,15 +225,74 @@ void layer_axis_reflection()
     delta_deg, 1e-6);
 }
 
+// Layer 5 ---------------------------------------------------------------
+// Static injection through the real publish chain: pose -> quaternion (the same
+// helper the odometry publisher uses) -> yaw extraction, plus the mount
+// conversion used by the export. No ROS, no camera, nothing can overwrite it.
+void layer_static_injection()
+{
+  std::printf("\n[L5] static injection through the publish chain\n");
+  const cv::Mat gazebo_T_map = visual_slam::make_gazebo_T_initial_optical(0.08, 0.035, 0.32, 0.0);
+
+  struct Case
+  {
+    const char * name;
+    double yaw_deg;
+    double tx;
+    double ty;
+    double tz;
+  };
+  const Case cases[] = {
+    {"identity", 0.0, 0.0, 0.0, 0.0},
+    {"+30 yaw", 30.0, 0.0, 0.0, 0.0},
+    {"-30 yaw", -30.0, 0.0, 0.0, 0.0},
+    {"+90 yaw", 90.0, 0.0, 0.0, 0.0},
+    {"pure translation", 0.0, 0.5, 0.0, 1.0},
+  };
+
+  std::printf("  %-16s %9s %9s %9s %9s\n",
+    "case", "optical", "quat2y", "quatZ", "gazebo");
+  for (const auto & item : cases) {
+    const cv::Mat pose = make_pose(item.yaw_deg, item.tx, item.ty, item.tz);
+    const cv::Mat rotation = pose(cv::Rect(0, 0, 3, 3));
+    const cv::Vec4d quaternion = visual_slam::rotation_to_quaternion_xyzw(rotation);
+    const double optical_yaw = yaw_deg(pose);
+    const double quat_y_yaw = 2.0 * std::atan2(quaternion[1], quaternion[3]) * 180.0 / CV_PI;
+    const double quat_z_yaw = std::atan2(
+      2.0 * (quaternion[3] * quaternion[2] + quaternion[0] * quaternion[1]),
+      1.0 - 2.0 * (quaternion[1] * quaternion[1] + quaternion[2] * quaternion[2])) * 180.0 / CV_PI;
+    const cv::Mat forward = rotation * (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
+    const cv::Mat gazebo_forward = gazebo_T_map(cv::Rect(0, 0, 3, 3)) * forward;
+    const double gazebo_yaw = std::atan2(
+      gazebo_forward.at<double>(1), gazebo_forward.at<double>(0)) * 180.0 / CV_PI;
+    std::printf("  %-16s %+9.3f %+9.3f %+9.3f %+9.3f\n",
+      item.name, optical_yaw, quat_y_yaw, quat_z_yaw, gazebo_yaw);
+
+    if (std::fabs(item.tx) + std::fabs(item.ty) + std::fabs(item.tz) < 1e-9 || item.yaw_deg != 0.0) {
+      expect_near(std::string("L5 2*atan2(qy,qw) reproduces the optical yaw for ") + item.name,
+        quat_y_yaw, optical_yaw, 1e-6);
+      expect_near(std::string("L5 quaternion carries no z-yaw for ") + item.name,
+        quat_z_yaw, 0.0, 1e-6);
+      expect_near(std::string("L5 mount maps optical yaw to the opposite Gazebo yaw for ") +
+        item.name, gazebo_yaw, -optical_yaw, 1e-6);
+    }
+  }
+
+  // The export file itself has no orientation column, so an "export yaw" does
+  // not exist and must not be compared with anything.
+  std::printf("  note: trajectory_visual.csv exports positions only (no yaw column)\n");
+}
+
 }  // namespace
 
 int main()
 {
-  std::printf("pose convention test (four layers)\n");
+  std::printf("pose convention test (five layers)\n");
   layer_pnp_round_trip();
   layer_compose_direction();
   layer_optical_to_gazebo();
   layer_axis_reflection();
+  layer_static_injection();
   std::printf("\nchecks=%d failures=%d\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
