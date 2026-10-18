@@ -3077,6 +3077,7 @@ private:
     }
     std::vector<cv::Point3f> object_points;
     std::vector<cv::Point2f> image_points;
+    std::vector<cv::Point2f> object_pixels;
     std::vector<cv::Point3f> current_points3d;
     std::set<int> used_current_indices;
     std::vector<cv::Point2f> previous_pixels;
@@ -3119,6 +3120,7 @@ private:
       }
       object_points.push_back(metric_keyframe_->points3d[index]);
       image_points.push_back(tracked_pixels[index]);
+      object_pixels.push_back(metric_keyframe_->keypoints[index].pt);
       current_points3d.push_back(current.points3d[nearest_index]);
     }
     cv::Mat rotation_vector;
@@ -3243,7 +3245,7 @@ private:
       std::abs(last_pnp_yaw_deg_) > debug_dump_best_yaw_deg_)
     {
       debug_dump_best_yaw_deg_ = std::abs(last_pnp_yaw_deg_);
-      dump_pnp_frame(object_points, image_points, pnp_transform,
+      dump_pnp_frame(object_points, image_points, object_pixels, pnp_transform,
         rigid_transform_estimate, inlier_count);
     }
     last_reference_yaw_deg_ = heading_deg_of(reference_world_pose_);
@@ -3385,7 +3387,8 @@ private:
   // Debug-only: dump one PnP frame with every input needed to replay the solve
   // offline in the same order the node uses at runtime.
   void dump_pnp_frame(const std::vector<cv::Point3f> & object_points,
-    const std::vector<cv::Point2f> & image_points, const cv::Mat & pnp_transform,
+    const std::vector<cv::Point2f> & image_points,
+    const std::vector<cv::Point2f> & object_pixels, const cv::Mat & pnp_transform,
     const cv::Mat & rigid_transform, int inliers) const
   {
     std::ofstream out(debug_dump_path_, std::ios::trunc);
@@ -3413,6 +3416,13 @@ private:
         out << ",";
       }
       out << "[" << image_points[index].x << "," << image_points[index].y << "]";
+    }
+    out << "],\"object_pixels\":[";
+    for (std::size_t index = 0; index < object_pixels.size(); ++index) {
+      if (index) {
+        out << ",";
+      }
+      out << "[" << object_pixels[index].x << "," << object_pixels[index].y << "]";
     }
     out << "],\"pnp_transform\":";
     write_matrix_json(out, pnp_transform);
