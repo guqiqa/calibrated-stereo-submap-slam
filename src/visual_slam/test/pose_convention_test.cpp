@@ -283,16 +283,122 @@ void layer_static_injection()
   std::printf("  note: trajectory_visual.csv exports positions only (no yaw column)\n");
 }
 
+// Layer 6 ---------------------------------------------------------------
+// Rigid-transform contract with explicit 4x4 matrices.
+//
+// The reference camera sits at world_T_reference. The current camera is at
+// reference_T_current (its pose expressed in the reference frame), so by
+// definition world_T_current = world_T_reference * reference_T_current.
+// solvePnP over reference points and current pixels returns current_T_reference,
+// and compose(world_T_reference, current_T_reference) must reproduce the defined
+// world pose exactly, rotation and translation together.
+void layer_rigid_contract()
+{
+  std::printf("\n[L6] rigid transform contract (explicit 4x4)\n");
+  const double fx = 420.0;
+  const double fy = 420.0;
+  const double cx = 320.0;
+  const double cy = 240.0;
+  const cv::Mat camera_matrix =
+    (cv::Mat_<double>(3, 3) << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0);
+  const cv::Mat world_T_reference = make_pose(12.0, 1.0, 0.0, 2.0);
+
+  struct Case
+  {
+    const char * name;
+    double yaw_deg;
+    double forward_m;
+  };
+  const Case cases[] = {
+    {"pure forward", 0.0, 0.5},
+    {"pure rotation", 5.0, 0.0},
+    {"forward + yaw", 5.0, 0.5},
+    {"forward - yaw", -5.0, 0.5},
+  };
+
+  std::vector<cv::Point3f> object_points;
+  for (int row = -3; row <= 3; ++row) {
+    for (int column = -3; column <= 3; ++column) {
+      object_points.emplace_back(static_cast<float>(column * 0.35),
+        static_cast<float>(row * 0.25), static_cast<float>(2.0 + (row + 3) * 0.45));
+    }
+  }
+
+  for (const auto & item : cases) {
+    // Explicit reference_T_current: the current camera as seen from the reference.
+    const cv::Mat reference_T_current = make_pose(item.yaw_deg, 0.0, 0.0, item.forward_m);
+    const cv::Mat current_T_reference = reference_T_current.inv();
+    const cv::Mat expected_world = world_T_reference * reference_T_current;
+
+    std::vector<cv::Point2f> image_points;
+    for (const auto & point : object_points) {
+      const cv::Mat vector = (cv::Mat_<double>(4, 1) << point.x, point.y, point.z, 1.0);
+      const cv::Mat camera = current_T_reference * vector;
+      image_points.emplace_back(
+        static_cast<float>(fx * camera.at<double>(0) / camera.at<double>(2) + cx),
+        static_cast<float>(fy * camera.at<double>(1) / camera.at<double>(2) + cy));
+    }
+
+    cv::Mat rvec;
+    cv::Mat tvec;
+    const bool ok = cv::solvePnPRansac(object_points, image_points, camera_matrix, cv::Mat(),
+        rvec, tvec, false, 200, 3.0, 0.99, cv::noArray(), cv::SOLVEPNP_ITERATIVE);
+    expect_true(std::string("L6 solvePnP converged for ") + item.name, ok);
+    if (!ok) {
+      continue;
+    }
+    cv::Mat rotation;
+    cv::Rodrigues(rvec, rotation);
+    cv::Mat recovered = cv::Mat::eye(4, 4, CV_64F);
+    rotation.copyTo(recovered(cv::Rect(0, 0, 3, 3)));
+    tvec.copyTo(recovered(cv::Rect(3, 0, 1, 3)));
+
+    const cv::Mat composed = visual_slam::compose_world_pose_from_current_T_previous(
+      world_T_reference, recovered);
+    const cv::Mat composed_rotation = composed(cv::Rect(0, 0, 3, 3));
+
+    expect_near(std::string("L6 rotation of ") + item.name,
+      cv::norm(composed_rotation - expected_world(cv::Rect(0, 0, 3, 3)), cv::NORM_INF), 0.0, 1e-6);
+    expect_near(std::string("L6 translation of ") + item.name,
+      cv::norm(composed(cv::Rect(3, 0, 1, 3)) - expected_world(cv::Rect(3, 0, 1, 3)),
+      cv::NORM_INF), 0.0, 1e-6);
+    expect_near(std::string("L6 determinant of ") + item.name,
+      cv::determinant(composed_rotation), 1.0, 1e-9);
+    expect_near(std::string("L6 orthonormality of ") + item.name,
+      cv::norm(composed_rotation * composed_rotation.t() - cv::Mat::eye(3, 3, CV_64F),
+      cv::NORM_INF), 0.0, 1e-9);
+
+    std::printf(
+      "  %-14s yaw in %+7.3f  recovered %+7.3f  composed %+7.3f  expected %+7.3f  "
+      "forward t %+6.3f\n",
+      item.name, item.yaw_deg, yaw_deg(recovered), yaw_deg(composed), yaw_deg(expected_world),
+      composed.at<double>(2, 3) - world_T_reference.at<double>(2, 3));
+  }
+
+  // The rotation-only path hands compose a reference_T_current shaped matrix
+  // (apply_temporal_rotation inverts it internally). That must raise the world
+  // heading by exactly its yaw, with no translation change.
+  const cv::Mat temporal_rotation = make_pose(5.0, 0.0, 0.0, 0.0);
+  const cv::Mat applied = visual_slam::compose_world_pose_from_current_T_previous(
+    world_T_reference, temporal_rotation.inv());
+  expect_near("L6 rotation-only input raises the world yaw by +5",
+    yaw_deg(applied) - yaw_deg(world_T_reference), 5.0, 1e-6);
+  expect_near("L6 rotation-only input leaves the translation unchanged",
+    cv::norm(applied(cv::Rect(3, 0, 1, 3)) - world_T_reference(cv::Rect(3, 0, 1, 3)),
+    cv::NORM_INF), 0.0, 1e-9);
+}
+
 }  // namespace
 
 int main()
 {
-  std::printf("pose convention test (five layers)\n");
+  std::printf("pose convention test (six layers)\n");
   layer_pnp_round_trip();
   layer_compose_direction();
   layer_optical_to_gazebo();
   layer_axis_reflection();
   layer_static_injection();
+  layer_rigid_contract();
   std::printf("\nchecks=%d failures=%d\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
