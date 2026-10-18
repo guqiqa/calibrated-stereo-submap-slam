@@ -1,0 +1,239 @@
+// Four-layer convention test for the metric-path pose chain.
+//
+// Layer 1: solvePnP round trip in pure OpenCV coordinates.
+// Layer 2: compose_world_pose_from_current_T_previous direction semantics.
+// Layer 3: optical pose -> Gazebo pose (mount transform and ground yaw).
+// Layer 4: point-cloud axis reflection S = diag(1,-1,1) conjugation.
+//
+// Each layer asserts what it can prove and prints the numbers it cannot, so a
+// failing layer names the place where the convention breaks instead of leaving
+// a sign to be guessed from a simulation run.
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include <opencv2/calib3d.hpp>
+#include <opencv2/core.hpp>
+
+#include "visual_slam/geometry.hpp"
+
+namespace
+{
+
+int g_failures = 0;
+int g_checks = 0;
+
+void expect_near(const std::string & name, double actual, double expected, double tolerance)
+{
+  ++g_checks;
+  const double error = std::fabs(actual - expected);
+  if (error > tolerance) {
+    ++g_failures;
+    std::printf("  FAIL %-58s actual=%+.6f expected=%+.6f tol=%.1e\n",
+      name.c_str(), actual, expected, tolerance);
+  }
+}
+
+void expect_true(const std::string & name, bool condition)
+{
+  ++g_checks;
+  if (!condition) {
+    ++g_failures;
+    std::printf("  FAIL %s\n", name.c_str());
+  }
+}
+
+void report(const std::string & name, double value)
+{
+  std::printf("  info %-58s %+.6f\n", name.c_str(), value);
+}
+
+double yaw_deg(const cv::Mat & transform)
+{
+  return std::atan2(transform.at<double>(0, 2), transform.at<double>(2, 2)) * 180.0 / CV_PI;
+}
+
+cv::Mat make_pose(double yaw_degrees, double tx, double ty, double tz)
+{
+  const double radians = yaw_degrees * CV_PI / 180.0;
+  const double cosine = std::cos(radians);
+  const double sine = std::sin(radians);
+  cv::Mat pose = cv::Mat::eye(4, 4, CV_64F);
+  pose.at<double>(0, 0) = cosine;
+  pose.at<double>(0, 2) = sine;
+  pose.at<double>(2, 0) = -sine;
+  pose.at<double>(2, 2) = cosine;
+  pose.at<double>(0, 3) = tx;
+  pose.at<double>(1, 3) = ty;
+  pose.at<double>(2, 3) = tz;
+  return pose;
+}
+
+// Layer 1 ---------------------------------------------------------------
+void layer_pnp_round_trip()
+{
+  std::printf("\n[L1] solvePnP round trip in pure OpenCV coordinates\n");
+  const int width = 640;
+  const int height = 480;
+  const double fx = 400.0;
+  const double fy = 400.0;
+  const double cx = width / 2.0;
+  const double cy = height / 2.0;
+
+  const double delta_deg = 5.0;
+  const cv::Mat current_T_reference = make_pose(delta_deg, 0.10, -0.02, 0.30);
+
+  std::vector<cv::Point3f> object_points;
+  for (int row = -3; row <= 3; ++row) {
+    for (int column = -3; column <= 3; ++column) {
+      object_points.emplace_back(static_cast<float>(column * 0.35),
+        static_cast<float>(row * 0.25), static_cast<float>(2.0 + (row + 3) * 0.45));
+    }
+  }
+
+  std::vector<cv::Point2f> image_points;
+  for (const auto & point : object_points) {
+    const cv::Mat vector = (cv::Mat_<double>(4, 1) << point.x, point.y, point.z, 1.0);
+    const cv::Mat camera = current_T_reference * vector;
+    image_points.emplace_back(static_cast<float>(fx * camera.at<double>(0) / camera.at<double>(2) + cx),
+      static_cast<float>(fy * camera.at<double>(1) / camera.at<double>(2) + cy));
+  }
+
+  const cv::Mat camera_matrix = (cv::Mat_<double>(3, 3) << fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0);
+  cv::Mat rvec;
+  cv::Mat tvec;
+  const bool ok = cv::solvePnPRansac(object_points, image_points, camera_matrix, cv::Mat(),
+      rvec, tvec, false, 200, 3.0, 0.99, cv::noArray(), cv::SOLVEPNP_ITERATIVE);
+  expect_true("solvePnPRansac converged", ok);
+  if (!ok) {
+    return;
+  }
+  cv::Mat rotation;
+  cv::Rodrigues(rvec, rotation);
+  cv::Mat recovered = cv::Mat::eye(4, 4, CV_64F);
+  rotation.copyTo(recovered(cv::Rect(0, 0, 3, 3)));
+  tvec.copyTo(recovered(cv::Rect(3, 0, 1, 3)));
+
+  expect_near("L1 recovered yaw == declared current_T_reference yaw",
+    yaw_deg(recovered), delta_deg, 0.05);
+  expect_near("L1 recovered tx", recovered.at<double>(0, 3), 0.10, 5e-3);
+  expect_near("L1 recovered tz", recovered.at<double>(2, 3), 0.30, 5e-3);
+  report("L1 yaw(current_T_reference)", yaw_deg(current_T_reference));
+}
+
+// Layer 2 ---------------------------------------------------------------
+void layer_compose_direction()
+{
+  std::printf("\n[L2] compose direction semantics\n");
+  const cv::Mat world_T_reference = make_pose(10.0, 1.0, 0.0, 2.0);
+  const cv::Mat current_T_reference = make_pose(5.0, 0.0, 0.0, -0.5);
+  const cv::Mat reference_T_current = current_T_reference.inv();
+
+  const cv::Mat from_current = visual_slam::compose_world_pose_from_current_T_previous(
+    world_T_reference, current_T_reference);
+  const cv::Mat from_reference = visual_slam::compose_world_pose_from_current_T_previous(
+    world_T_reference, reference_T_current);
+
+  // compose(A, B) == A * B^-1, so the same physical motion expressed in the two
+  // opposite directions must give yaw of opposite sign.
+  expect_near("L2 compose(A, current_T_reference) yaw == 10 - 5",
+    yaw_deg(from_current), 5.0, 1e-6);
+  expect_near("L2 compose(A, reference_T_current) yaw == 10 + 5",
+    yaw_deg(from_reference), 15.0, 1e-6);
+  const cv::Mat by_product = world_T_reference * current_T_reference.inv();
+  expect_near("L2 compose(A,B) == A * B^-1 (rotation)",
+    cv::norm(from_current(cv::Rect(0, 0, 3, 3)) - by_product(cv::Rect(0, 0, 3, 3)), cv::NORM_INF),
+    0.0, 1e-9);
+  expect_near("L2 compose(A,B) == A * B^-1 (translation)",
+    cv::norm(from_current(cv::Rect(3, 0, 1, 3)) - by_product(cv::Rect(3, 0, 1, 3)), cv::NORM_INF),
+    0.0, 1e-9);
+  report("L2 world tx via current_T_reference", from_current.at<double>(0, 3));
+  report("L2 world tz via current_T_reference", from_current.at<double>(2, 3));
+  report("L2 world tx via reference_T_current", from_reference.at<double>(0, 3));
+  report("L2 world tz via reference_T_current", from_reference.at<double>(2, 3));
+
+  // The two inputs are not interchangeable: selecting the wrong direction
+  // changes the sign of the yaw increment.
+  const double delta_from_current = yaw_deg(from_current) - yaw_deg(world_T_reference);
+  const double delta_from_reference = yaw_deg(from_reference) - yaw_deg(world_T_reference);
+  expect_true("L2 the two directions differ in sign",
+    delta_from_current * delta_from_reference < 0.0);
+  report("L2 delta yaw via current_T_reference", delta_from_current);
+  report("L2 delta yaw via reference_T_current", delta_from_reference);
+}
+
+// Layer 3 ---------------------------------------------------------------
+void layer_optical_to_gazebo()
+{
+  std::printf("\n[L3] optical pose -> Gazebo pose\n");
+  const cv::Mat gazebo_T_map = visual_slam::make_gazebo_T_initial_optical(0.08, 0.035, 0.32, 0.0);
+
+  // Pure forward motion in the optical/map frame: +z.
+  const cv::Mat forward_pose = make_pose(0.0, 0.0, 0.0, 1.0);
+  const cv::Mat gazebo_forward = gazebo_T_map * forward_pose;
+  expect_near("L3 optical +z forward maps to Gazebo +x",
+    gazebo_forward.at<double>(0, 3), 0.08 + 1.0, 1e-6);
+
+  // Heading: how does an optical yaw appear as a Gazebo yaw?
+  const double delta_deg = 5.0;
+  const cv::Mat yawed_pose = make_pose(delta_deg, 0.0, 0.0, 0.0);
+  const cv::Mat gazebo_yawed = gazebo_T_map * yawed_pose;
+
+  const cv::Mat optical_forward = yawed_pose(cv::Rect(0, 0, 3, 3)) * (cv::Mat_<double>(3, 1) <<
+      0.0, 0.0, 1.0);
+  const cv::Mat gazebo_axis = gazebo_T_map(cv::Rect(0, 0, 3, 3)) * optical_forward;
+  const double gazebo_yaw = std::atan2(
+    gazebo_axis.at<double>(1), gazebo_axis.at<double>(0)) * 180.0 / CV_PI;
+
+  report("L3 optical yaw +5.00 deg", yaw_deg(yawed_pose));
+  report("L3 same rotation as Gazebo yaw", gazebo_yaw);
+  expect_near("L3 Gazebo yaw of an optical +5 deg yaw", gazebo_yaw, -delta_deg, 1e-6);
+  expect_true("L3 optical yaw and Gazebo yaw carry opposite signs",
+    yaw_deg(yawed_pose) * gazebo_yaw < 0.0);
+  (void)gazebo_yawed;
+}
+
+// Layer 4 ---------------------------------------------------------------
+void layer_axis_reflection()
+{
+  std::printf("\n[L4] point-cloud axis reflection S = diag(1,-1,1)\n");
+  const double delta_deg = 5.0;
+  const cv::Mat rotation = make_pose(delta_deg, 0.0, 0.0, 0.0)(cv::Rect(0, 0, 3, 3));
+
+  cv::Mat reflection = cv::Mat::eye(3, 3, CV_64F);
+  reflection.at<double>(1, 1) = -1.0;
+  const cv::Mat conjugated = reflection * rotation * reflection;
+
+  const cv::Mat identity = cv::Mat::eye(3, 3, CV_64F);
+  const double orthogonality = cv::norm(conjugated * conjugated.t() - identity, cv::NORM_INF);
+  const double determinant = cv::determinant(conjugated);
+  cv::Mat conjugated_pose = cv::Mat::eye(4, 4, CV_64F);
+  conjugated.copyTo(conjugated_pose(cv::Rect(0, 0, 3, 3)));
+
+  expect_near("L4 conjugated rotation stays orthonormal", orthogonality, 0.0, 1e-9);
+  expect_near("L4 conjugated rotation has det +1 (still SO(3))", determinant, 1.0, 1e-9);
+  cv::Mat original_pose = cv::Mat::eye(4, 4, CV_64F);
+  rotation.copyTo(original_pose(cv::Rect(0, 0, 3, 3)));
+  report("L4 yaw(R)", yaw_deg(original_pose));
+  report("L4 yaw(S R S)", yaw_deg(conjugated_pose));
+
+  // The reflection flips the yaw only because it also flips the y axis of the
+  // rotation. A y-only change of the point cloud without the matching reflection
+  // of the rotation would not be a similarity and must not be assumed to flip.
+  expect_near("L4 S R S keeps the yaw magnitude", std::fabs(yaw_deg(conjugated_pose)),
+    delta_deg, 1e-6);
+}
+
+}  // namespace
+
+int main()
+{
+  std::printf("pose convention test (four layers)\n");
+  layer_pnp_round_trip();
+  layer_compose_direction();
+  layer_optical_to_gazebo();
+  layer_axis_reflection();
+  std::printf("\nchecks=%d failures=%d\n", g_checks, g_failures);
+  return g_failures == 0 ? 0 : 1;
+}
