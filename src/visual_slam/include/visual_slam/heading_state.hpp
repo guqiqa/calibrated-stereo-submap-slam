@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <vector>
 
 namespace visual_slam
 {
@@ -61,6 +62,19 @@ struct HeadingCandidate
   HeadingSource source{HeadingSource::kUnknown};
 };
 
+// One accepted heading write. The ledger makes "what was measured" and "what
+// was published" the same event, so a divergence such as 243 vs 124 degrees
+// becomes a detectable bookkeeping error instead of a silent drift.
+struct HeadingCommitEvent
+{
+  std::int64_t frame_index{0};
+  HeadingSource source{HeadingSource::kUnknown};
+  double candidate_deg{0.0};
+  double previous_committed_deg{0.0};
+  double committed_deg{0.0};
+  double delta_deg{0.0};
+};
+
 struct HeadingUpdate
 {
   bool accepted{false};
@@ -97,6 +111,9 @@ public:
   void reset(double initial_heading_deg = 0.0)
   {
     committed_deg_ = wrap_deg_180(initial_heading_deg);
+    initial_deg_ = committed_deg_;
+    cumulative_delta_deg_ = 0.0;
+    events_.clear();
     pending_sign_ = 0;
     pending_frames_ = 0;
     pending_delta_deg_ = 0.0;
@@ -116,6 +133,18 @@ public:
   int duplicate_count() const { return duplicate_count_; }
   int absolute_count() const { return absolute_count_; }
   bool pending() const { return pending_frames_ > 0; }
+  double cumulative_delta_deg() const { return cumulative_delta_deg_; }
+  double initial_deg() const { return initial_deg_; }
+  const std::vector<HeadingCommitEvent> & events() const { return events_; }
+
+  // The ledger must add up: the sum of every recorded delta has to reproduce
+  // the committed heading relative to the reset heading.
+  bool conservation_ok(double tolerance_deg = 1.0e-6) const
+  {
+    const double ledger = wrap_deg_180(committed_deg_ - initial_deg_);
+    const double booked = wrap_deg_180(cumulative_delta_deg_);
+    return std::abs(wrap_deg_180(ledger - booked)) <= tolerance_deg;
+  }
 
   HeadingUpdate propose(const HeadingCandidate & candidate)
   {
@@ -162,6 +191,8 @@ public:
     if (pending_frames_ >= std::max(2, config_.min_frames) &&
       std::abs(delta) >= config_.commit_deg)
     {
+      record_event(candidate.frame_index, candidate.source, candidate.heading_deg,
+        committed_deg_, candidate.heading_deg);
       committed_deg_ = wrap_deg_180(candidate.heading_deg);
       reset_window();
       ++commit_count_;
@@ -188,7 +219,7 @@ public:
       update.committed_deg = committed_deg_;
       return update;
     }
-    (void)source;
+    record_event(frame_index, source, heading_deg, committed_deg_, heading_deg);
     committed_deg_ = wrap_deg_180(heading_deg);
     last_frame_index_ = frame_index;
     reset_window();
@@ -200,6 +231,23 @@ public:
   }
 
 private:
+  void record_event(std::int64_t frame_index, HeadingSource source, double candidate_deg,
+    double previous_committed_deg, double committed_deg)
+  {
+    HeadingCommitEvent event;
+    event.frame_index = frame_index;
+    event.source = source;
+    event.candidate_deg = candidate_deg;
+    event.previous_committed_deg = previous_committed_deg;
+    event.committed_deg = wrap_deg_180(committed_deg);
+    event.delta_deg = wrap_deg_180(committed_deg - previous_committed_deg);
+    cumulative_delta_deg_ = wrap_deg_180(cumulative_delta_deg_ + event.delta_deg);
+    if (events_.size() >= 8192U) {
+      events_.erase(events_.begin(), events_.begin() + 4096);
+    }
+    events_.push_back(event);
+  }
+
   void reset_window()
   {
     pending_sign_ = 0;
@@ -209,6 +257,9 @@ private:
 
   Config config_{};
   double committed_deg_{0.0};
+  double initial_deg_{0.0};
+  double cumulative_delta_deg_{0.0};
+  std::vector<HeadingCommitEvent> events_{};
   int pending_sign_{0};
   int pending_frames_{0};
   double pending_delta_deg_{0.0};

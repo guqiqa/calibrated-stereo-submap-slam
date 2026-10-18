@@ -265,6 +265,55 @@ void test_rejected_frame_does_not_stall_the_window()
   expect_near(state.committed_deg(), 0.42, 1e-9, "the committed heading follows the confirmation");
 }
 
+void test_commit_ledger_conserves()
+{
+  HeadingState state;
+  state.reset(10.0);
+  state.propose(candidate(1, 10.12));
+  state.propose(candidate(2, 10.25));
+  state.propose(candidate(3, 10.50));
+  state.propose(candidate(4, 10.72));
+  state.propose(candidate(5, 10.95));
+
+  expect_true(state.commit_count() >= 2, "several commits recorded");
+  expect_true(state.conservation_ok(), "the ledger adds up to the committed heading");
+  expect_near(state.cumulative_delta_deg(), state.committed_deg() - 10.0, 1.0e-6,
+    "cumulative delta matches the net heading change");
+  expect_true(!state.events().empty(), "events recorded");
+  double sum = 0.0;
+  for (const auto & event : state.events()) {
+    sum += event.delta_deg;
+    expect_true(event.frame_index > 0, "event carries a frame id");
+    expect_true(event.source != visual_slam::HeadingSource::kUnknown, "event carries a source");
+  }
+  expect_near(sum, state.cumulative_delta_deg(), 1.0e-6, "event deltas sum to the cumulative delta");
+}
+
+void test_ledger_across_pi()
+{
+  HeadingState state;
+  state.reset(179.9);
+  state.propose(candidate(1, -179.95));
+  state.propose(candidate(2, -179.70));
+  expect_true(state.commit_count() >= 1, "commit across the branch");
+  expect_true(state.conservation_ok(), "conservation holds across +-180");
+  for (const auto & event : state.events()) {
+    expect_true(std::abs(event.delta_deg) < 180.0, "no event delta is a full turn");
+  }
+}
+
+void test_absolute_write_is_in_the_ledger()
+{
+  HeadingState state;
+  state.reset(0.0);
+  state.set_absolute(90.0, HeadingSource::kRelocalization, 7, "relocalization_accepted");
+  expect_true(state.conservation_ok(), "absolute writes are booked too");
+  expect_true(!state.events().empty(), "absolute write recorded as an event");
+  expect_near(state.events().back().delta_deg, 90.0, 1.0e-6, "absolute event delta");
+  expect_true(state.events().back().source == visual_slam::HeadingSource::kRelocalization,
+    "absolute event keeps its source");
+}
+
 }  // namespace
 
 int main()
@@ -282,6 +331,9 @@ int main()
   test_turn_composition_order();
   test_frame_loop_with_two_sources();
   test_rejected_frame_does_not_stall_the_window();
+  test_commit_ledger_conserves();
+  test_ledger_across_pi();
+  test_absolute_write_is_in_the_ledger();
 
   std::cout << "checks=" << checks << " failures=" << failures << std::endl;
   return failures == 0 ? 0 : 1;
