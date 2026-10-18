@@ -211,6 +211,60 @@ void test_turn_composition_order()
     "the composition order is observable and must stay explicit");
 }
 
+// Frame-level loop: the metric path proposes an absolute heading every frame,
+// the recovery path offers a second observation for the same frame, and the
+// position advances with the committed heading only.
+void test_frame_loop_with_two_sources()
+{
+  HeadingState state;
+  state.reset(0.0);
+  visual_slam::GroundPose pose;
+  double truth_deg = 0.0;
+  const double rate_deg_per_frame = 0.10;
+  double previous_committed = state.committed_deg();
+  double max_commit_jump = 0.0;
+  int duplicate_frames = 0;
+
+  for (std::int64_t frame = 1; frame <= 200; ++frame) {
+    truth_deg += rate_deg_per_frame;
+    const auto metric = state.propose(candidate(frame, truth_deg + 0.01, true,
+      HeadingSource::kMetricPnp));
+    const auto recovery = state.propose(candidate(frame, truth_deg + 0.02, true,
+      HeadingSource::kDescriptor));
+    if (recovery.reason == "duplicate_frame") {
+      ++duplicate_frames;
+    }
+    pose = visual_slam::advance_ground_pose(pose, state.committed_deg(), 0.01, 0.0);
+    if (metric.commit) {
+      max_commit_jump = std::max(max_commit_jump,
+        std::abs(state.committed_deg() - previous_committed));
+      previous_committed = state.committed_deg();
+    }
+  }
+
+  expect_true(duplicate_frames == 200, "every second observation of a frame is a duplicate");
+  expect_true(max_commit_jump <= 0.45, "no single commit moves the heading by more than one window");
+  expect_true(state.committed_deg() <= truth_deg + 1e-6, "the heading never runs ahead of the truth");
+  expect_near(state.committed_deg(), truth_deg, 0.45, "the heading tracks the truth within one window");
+  expect_true(state.commit_count() > 1, "the loop actually committed");
+  expect_near(pose.heading_deg, state.committed_deg(), 1e-9, "the pose carries the committed heading");
+  expect_near(pose.x, 200 * 0.01, 0.2, "translation accumulated along the committed heading");
+}
+
+void test_rejected_frame_does_not_stall_the_window()
+{
+  HeadingState state;
+  state.reset(0.0);
+  state.propose(candidate(1, 0.12));
+  state.propose(candidate(2, 0.24, false));   // burst of bad evidence
+  const auto recovered = state.propose(candidate(3, 0.30));
+  expect_true(recovered.accepted, "tracking resumes after a rejected frame");
+  expect_true(!recovered.commit, "the window restarts after the rejection");
+  const auto confirmed = state.propose(candidate(4, 0.42));
+  expect_true(confirmed.commit, "the next same-sign frame confirms the window");
+  expect_near(state.committed_deg(), 0.42, 1e-9, "the committed heading follows the confirmation");
+}
+
 }  // namespace
 
 int main()
@@ -226,6 +280,8 @@ int main()
   test_metric_and_recovery_alternation();
   test_translation_uses_committed_heading();
   test_turn_composition_order();
+  test_frame_loop_with_two_sources();
+  test_rejected_frame_does_not_stall_the_window();
 
   std::cout << "checks=" << checks << " failures=" << failures << std::endl;
   return failures == 0 ? 0 : 1;
