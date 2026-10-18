@@ -111,6 +111,7 @@ public:
   void reset(double initial_heading_deg = 0.0)
   {
     committed_deg_ = wrap_deg_180(initial_heading_deg);
+    measured_deg_ = committed_deg_;
     initial_deg_ = committed_deg_;
     cumulative_delta_deg_ = 0.0;
     events_.clear();
@@ -126,6 +127,8 @@ public:
 
   const Config & config() const { return config_; }
   double committed_deg() const { return committed_deg_; }
+  double measured_deg() const { return measured_deg_; }
+  double lag_deg() const { return wrap_deg_180(measured_deg_ - committed_deg_); }
   double pending_delta_deg() const { return pending_delta_deg_; }
   int pending_frames() const { return pending_frames_; }
   int commit_count() const { return commit_count_; }
@@ -177,6 +180,7 @@ public:
       update.reason = "below_min_frame_deg";
       return update;
     }
+    measured_deg_ = wrap_deg_180(candidate.heading_deg);
     const int sign = delta > 0.0 ? 1 : -1;
     update.accepted = true;
     if (pending_frames_ == 0 || sign != pending_sign_) {
@@ -221,6 +225,7 @@ public:
     }
     record_event(frame_index, source, heading_deg, committed_deg_, heading_deg);
     committed_deg_ = wrap_deg_180(heading_deg);
+    measured_deg_ = committed_deg_;
     last_frame_index_ = frame_index;
     reset_window();
     ++absolute_count_;
@@ -257,6 +262,10 @@ private:
 
   Config config_{};
   double committed_deg_{0.0};
+  // Measurement chain: advances with every accepted observation, whether or not
+  // it has been confirmed. The reference poses must follow this value so that
+  // rotation measured between two commits is never discarded.
+  double measured_deg_{0.0};
   double initial_deg_{0.0};
   double cumulative_delta_deg_{0.0};
   std::vector<HeadingCommitEvent> events_{};

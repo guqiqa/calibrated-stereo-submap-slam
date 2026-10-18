@@ -314,6 +314,35 @@ void test_absolute_write_is_in_the_ledger()
     "absolute event keeps its source");
 }
 
+void test_measured_chain_advances_independently()
+{
+  HeadingState state;
+  state.reset(0.0);
+  state.propose(candidate(1, 0.12));
+  expect_near(state.measured_deg(), 0.12, 1e-9, "measured advances with the observation");
+  expect_near(state.committed_deg(), 0.0, 1e-9, "committed waits for confirmation");
+  expect_near(state.lag_deg(), 0.12, 1e-9, "lag is the uncommitted rotation");
+
+  const auto second = state.propose(candidate(2, 0.24));
+  expect_true(second.commit, "the second frame confirms");
+  expect_near(state.committed_deg(), 0.24, 1e-9, "commit adopts the measured heading");
+  expect_near(state.lag_deg(), 0.0, 1e-9, "lag collapses after a commit");
+  expect_true(state.conservation_ok(), "ledger conserved with the measured chain");
+}
+
+void test_measured_chain_survives_rejection()
+{
+  HeadingState state;
+  state.reset(0.0);
+  state.propose(candidate(1, 0.18));
+  state.propose(candidate(2, 0.40, false));   // rejected observation
+  expect_near(state.measured_deg(), 0.18, 1e-9, "a rejected observation does not advance the chain");
+  expect_near(state.committed_deg(), 0.0, 1e-9, "nor the committed heading");
+  state.propose(candidate(3, 0.45));
+  expect_near(state.measured_deg(), 0.45, 1e-9, "the chain resumes with the next accepted frame");
+  expect_true(state.lag_deg() > 0.4, "the lag reflects the uncommitted rotation");
+}
+
 }  // namespace
 
 int main()
@@ -334,6 +363,8 @@ int main()
   test_commit_ledger_conserves();
   test_ledger_across_pi();
   test_absolute_write_is_in_the_ledger();
+  test_measured_chain_advances_independently();
+  test_measured_chain_survives_rejection();
 
   std::cout << "checks=" << checks << " failures=" << failures << std::endl;
   return failures == 0 ? 0 : 1;
