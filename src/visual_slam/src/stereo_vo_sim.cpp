@@ -101,6 +101,10 @@ public:
     odometry_topic_ = declare_parameter<std::string>("odometry_topic", "/visual_slam/odometry_sim");
     status_topic_ = declare_parameter<std::string>("status_topic", "/visual_slam/status_sim");
     max_pair_delta_ms_ = declare_parameter<double>("max_pair_delta_ms", 10.0);
+    // Best-effort image delivery drops samples independently on the left and the
+    // right stream under load, which desynchronises the pair by exactly one frame
+    // interval and then fails the stereo gate. Reliable delivery keeps the pair.
+    image_qos_reliable_ = declare_parameter<bool>("image_qos_reliable", false);
     processing_scale_ = declare_parameter<double>("processing_scale", 0.75);
     max_features_ = declare_parameter<int>("max_features", 1200);
     max_disparity_ = declare_parameter<double>("max_disparity", 160.0);
@@ -346,7 +350,9 @@ public:
     matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, false);
     odometry_publisher_ = create_publisher<nav_msgs::msg::Odometry>(odometry_topic_, 10);
     status_publisher_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
-    const auto qos = rclcpp::SensorDataQoS().keep_last(5);
+    const auto qos = image_qos_reliable_ ?
+      rclcpp::QoS(rclcpp::KeepLast(30)).reliable() :
+      rclcpp::SensorDataQoS().keep_last(5);
     left_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       left_topic_, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
         left_queue_.push_back(std::move(message));
@@ -704,6 +710,7 @@ private:
     while (queue.size() > 6U) {
       queue.pop_front();
       ++rejected_pairs_;
+      ++queue_trim_drops_;
     }
   }
 
@@ -2458,12 +2465,14 @@ private:
     }
     const double pair_delta_ms = smallest_delta_ns / 1e6;
     if (pair_delta_ms > max_pair_delta_ms_) {
+      last_sync_reject_delta_ms_ = pair_delta_ms;
       if (stamp_ns(left_queue_.front()->header.stamp) < stamp_ns(right_queue_.front()->header.stamp)) {
         left_queue_.pop_front();
       } else {
         right_queue_.pop_front();
       }
       ++rejected_pairs_;
+      ++sync_rejects_;
       return;
     }
     const auto left = *best_left;
@@ -3377,6 +3386,14 @@ private:
     data << "{\"state\":\"" << state << "\",\"stereo_points\":" << stereo_points
          << ",\"temporal_matches\":" << temporal_matches << ",\"pnp_inliers\":" << pnp_inliers
          << ",\"pair_delta_ms\":" << pair_delta_ms << ",\"processing_ms\":" << processing_ms
+         // Frame accounting: separates "no synchronised pair" from "queue overflow"
+         // so the effective frame interval can be attributed instead of guessed.
+         << ",\"processed_frames\":" << processed_frames_
+         << ",\"queue_trim_drops\":" << queue_trim_drops_
+         << ",\"pair_sync_rejects\":" << sync_rejects_
+         << ",\"sync_reject_delta_ms\":" << last_sync_reject_delta_ms_
+         << ",\"queue_left\":" << left_queue_.size()
+         << ",\"queue_right\":" << right_queue_.size()
          << ",\"tracked_pairs\":" << tracked_pairs_ << ",\"rejected_pairs\":" << rejected_pairs_
          << ",\"tracking_failures\":" << tracking_failures_
          << ",\"submap_mode\":\"" << submap_mode_ << "\""
@@ -3695,6 +3712,7 @@ private:
   std::string odom_frame_;
   std::string camera_frame_;
   double max_pair_delta_ms_{};
+  bool image_qos_reliable_{false};
   double processing_scale_{};
   int max_features_{};
   double max_disparity_{};
@@ -3827,6 +3845,9 @@ private:
   bool baseline_parameter_declared_{false};
   bool calibration_ready_{false};
   int rejected_pairs_{0};
+  int queue_trim_drops_{0};
+  int sync_rejects_{0};
+  double last_sync_reject_delta_ms_{0.0};
   int tracking_failures_{0};
   int consecutive_tracking_failures_{0};
   int rotation_settle_count_{0};

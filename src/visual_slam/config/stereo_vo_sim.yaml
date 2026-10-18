@@ -7,6 +7,7 @@ stereo_vo_sim:
     odometry_topic: /visual_slam/odometry_sim
     status_topic: /visual_slam/status_sim
     max_pair_delta_ms: 10.0
+    image_qos_reliable: false
     processing_scale: 0.75
     max_features: 1200
     max_disparity: 160.0
