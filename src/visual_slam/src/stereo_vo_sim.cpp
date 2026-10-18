@@ -28,7 +28,6 @@
 
 #include "visual_slam/geometry.hpp"
 #include "visual_slam/observability.hpp"
-#include "visual_slam/heading_state.hpp"
 
 #include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/quaternion.hpp>
@@ -184,12 +183,6 @@ public:
       "obs_rotation_commit_deg", 0.20);
     rotation_commit_config_.min_frames = declare_parameter<int>("obs_rotation_commit_frames", 2);
     rotation_commit_ = visual_slam::RotationCommitTracker(rotation_commit_config_);
-    visual_slam::HeadingState::Config heading_config;
-    heading_config.min_frame_deg = rotation_commit_config_.min_frame_deg;
-    heading_config.commit_deg = rotation_commit_config_.commit_deg;
-    heading_config.min_frames = rotation_commit_config_.min_frames;
-    heading_state_ = visual_slam::HeadingState(heading_config);
-    heading_state_.reset(0.0);
     loop_check_period_frames_ = declare_parameter<int>("loop_check_period_frames", 15);
     loop_min_keyframe_gap_ = declare_parameter<int>("loop_min_keyframe_gap", 8);
     loop_min_matches_ = declare_parameter<int>("loop_min_matches", 35);
@@ -1107,23 +1100,6 @@ private:
   static double json_number(double value)
   {
     return std::isfinite(value) ? value : -1.0;
-  }
-
-  static double heading_deg_of(const cv::Mat & pose)
-  {
-    return std::atan2(pose.at<double>(0, 2), pose.at<double>(2, 2)) * 180.0 / CV_PI;
-  }
-
-  static void set_pose_heading(cv::Mat & pose, double heading_deg)
-  {
-    const double radians = heading_deg * CV_PI / 180.0;
-    const double cosine = std::cos(radians);
-    const double sine = std::sin(radians);
-    cv::Mat rotation = (cv::Mat_<double>(3, 3) <<
-      cosine, 0.0, sine,
-      0.0, 1.0, 0.0,
-      -sine, 0.0, cosine);
-    rotation.copyTo(pose(cv::Rect(0, 0, 3, 3)));
   }
 
   static visual_slam::ObservabilityMode to_observability_mode(const std::string & name)
@@ -2768,17 +2744,6 @@ private:
         if (planar_motion_constraint_) {
           world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
         }
-        {
-          visual_slam::HeadingCandidate heading_candidate;
-          heading_candidate.frame_index = static_cast<std::int64_t>(processed_frames_);
-          heading_candidate.reference_frame = -1;
-          heading_candidate.heading_deg = heading_deg_of(world_T_current_);
-          heading_candidate.valid = true;
-          heading_candidate.source = use_anchor_rotation ?
-            visual_slam::HeadingSource::kDescriptor : visual_slam::HeadingSource::kShortBaseline;
-          last_heading_update_ = heading_state_.propose(heading_candidate);
-          set_pose_heading(world_T_current_, heading_state_.committed_deg());
-        }
         temporal_reference_ = current;
         temporal_reference_world_pose_ = world_T_current_.clone();
         set_rotation_anchor(current, world_T_current_);
@@ -2886,9 +2851,6 @@ private:
                 world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(
                   world_T_current_);
               }
-              heading_state_.set_absolute(heading_deg_of(world_T_current_),
-                visual_slam::HeadingSource::kRelocalization,
-                static_cast<std::int64_t>(processed_frames_), "relocalization_accepted");
               last_relocalization_accepted_ = true;
               last_rotation_decision_ = "accepted_visual_relocalization";
             } else {
@@ -2966,9 +2928,6 @@ private:
       reference_world_pose_ = world_T_current_.clone();
       temporal_reference_world_pose_ = world_T_current_.clone();
       reference_age_ = 0;
-      heading_state_.set_absolute(heading_deg_of(world_T_current_),
-        visual_slam::HeadingSource::kInitialization,
-        static_cast<std::int64_t>(processed_frames_), "initialization");
       insert_keyframe(*metric_keyframe_, world_T_current_, trajectory_distance_);
       trajectory_samples_.push_back({static_cast<double>(stamp_ns(stamp)) / 1e9, world_T_current_.clone()});
       update_loaded_submaps();
@@ -3134,18 +3093,7 @@ private:
     if (planar_motion_constraint_) {
       world_T_current_ = visual_slam::constrain_optical_pose_to_ground_plane(world_T_current_);
     }
-    {
-      visual_slam::HeadingCandidate heading_candidate;
-      heading_candidate.frame_index = static_cast<std::int64_t>(processed_frames_);
-      heading_candidate.reference_frame = -1;
-      heading_candidate.heading_deg = heading_deg_of(world_T_current_);
-      heading_candidate.valid =
-        inlier_count >= min_pnp_inliers_ || rigid_inliers >= min_3d3d_inliers_;
-      heading_candidate.source = visual_slam::HeadingSource::kMetricPnp;
-      last_heading_update_ = heading_state_.propose(heading_candidate);
-      set_pose_heading(world_T_current_, heading_state_.committed_deg());
-    }
-    yaw_update_source_ = last_heading_update_.commit ? "heading_commit" : "heading_pending";
+    yaw_update_source_ = "metric_transform";
     trajectory_distance_ = committed_distance_ + pose_translation(selected_transform);
     update_loaded_submaps();
     update_observability(current, stereo_points, static_cast<int>(object_points.size()), inlier_count);
@@ -3455,11 +3403,6 @@ private:
          << ",\"short_baseline_inliers\":" << last_short_baseline_inliers_
          << ",\"short_baseline_yaw_deg\":" << last_short_baseline_yaw_deg_
          << ",\"rotation_candidate_frames\":" << rotation_commit_.candidate_frames()
-         << ",\"heading_committed_deg\":" << heading_state_.committed_deg()
-         << ",\"heading_pending_frames\":" << heading_state_.pending_frames()
-         << ",\"heading_commit_count\":" << heading_state_.commit_count()
-         << ",\"heading_reject_count\":" << heading_state_.reject_count()
-         << ",\"heading_duplicate_count\":" << heading_state_.duplicate_count()
          << ",\"rotation_commit_frames\":" << rotation_commit_.commit_frames()
          << ",\"rotation_commit_sign\":" << last_rotation_commit_.sign
          << ",\"rotation_commit_abs_deg\":" << last_rotation_commit_.frame_deg
@@ -3636,8 +3579,6 @@ private:
   visual_slam::RotationCommitConfig rotation_commit_config_{};
   visual_slam::RotationCommitTracker rotation_commit_{};
   visual_slam::RotationCommitDecision last_rotation_commit_{};
-  visual_slam::HeadingState heading_state_{};
-  visual_slam::HeadingUpdate last_heading_update_{};
   int interval_frame_count_{0};
   int interval_accepted_frames_{0};
   int loop_check_period_frames_{};
