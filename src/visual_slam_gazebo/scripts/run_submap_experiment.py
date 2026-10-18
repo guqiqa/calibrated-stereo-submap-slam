@@ -30,7 +30,8 @@ from rclpy.qos import QoSProfile
 from std_msgs.msg import String
 from std_srvs.srv import Empty
 
-from waypoint_route_controller import WaypointPlan, load_waypoints, yaw_from_quaternion
+from waypoint_route_controller import (DEFAULT_MAX_DELIVERED_ANGULAR,
+    DISABLED_CALIBRATION, WaypointPlan, load_waypoints, yaw_from_quaternion)
 
 
 KEY_PARAMETERS = {
@@ -221,7 +222,9 @@ class ExperimentRecorder(Node):
         self.truth_writer.writerow(header)
         self.control_writer.writerow([
             "host_time", "x", "y", "yaw", "target_yaw", "yaw_error",
-            "waypoint", "phase", "linear_x", "angular_z"])
+            "waypoint", "phase", "linear_x", "angular_z",
+            "angular_target_delivered", "angular_calibration_enabled",
+            "angular_calibration_version", "angular_command_clamped"])
 
     def close_files(self):
         for file_handle in (self.status_file, self.odom_file, self.truth_file, self.control_file):
@@ -333,9 +336,16 @@ class ExperimentRecorder(Node):
         self.cmd_publisher.publish(message)
         if self.control_file is not None and self.latest_truth_pose is not None:
             x, y, yaw = self.latest_truth_pose
+            plan = self.waypoint_plan
+            target_delivered = getattr(plan, "last_angular_target", message.angular.z)
+            calibration_version = getattr(plan, "last_angular_calibration",
+                                          DISABLED_CALIBRATION)
+            calibration_enabled = calibration_version != DISABLED_CALIBRATION
+            clamped = bool(getattr(plan, "last_angular_clamped", False))
             self.control_writer.writerow([
                 time.time(), x, y, yaw, target_yaw, yaw_error,
-                waypoint, phase, message.linear.x, message.angular.z])
+                waypoint, phase, message.linear.x, message.angular.z,
+                target_delivered, calibration_enabled, calibration_version, clamped])
 
     def send_stop(self):
         message = Twist()
@@ -729,7 +739,9 @@ def run_one(node, mode, run, args, root):
     node.direction = 1.0
     node.waypoint_plan = (WaypointPlan(
         load_waypoints(args.waypoint_route), args.speed,
-        max_angular=args.max_turn_angular)
+        max_angular=args.max_turn_angular,
+        angular_calibration=args.angular_calibration,
+        max_delivered_angular=args.max_delivered_angular)
                           if args.waypoint_route else None)
     node.output_dir = output_dir
     node.open_files()
@@ -905,6 +917,11 @@ def parse_args():
     parser.add_argument("--duration", type=float, default=20.0)
     parser.add_argument("--warmup", type=float, default=3.0)
     parser.add_argument("--speed", type=float, default=0.2)
+    parser.add_argument("--angular-calibration", default=DISABLED_CALIBRATION,
+                        choices=[DISABLED_CALIBRATION, "in_place_v1"],
+                        help="Delivery compensation table for angular.z")
+    parser.add_argument("--max-delivered-angular", type=float,
+                        default=DEFAULT_MAX_DELIVERED_ANGULAR)
     parser.add_argument("--max-turn-angular", type=float, default=0.22,
                         help="maximum angular velocity for waypoint turns in rad/s")
     parser.add_argument("--angular", type=float, default=0.0)

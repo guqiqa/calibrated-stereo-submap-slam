@@ -21,6 +21,54 @@ def normalize_angle(value):
     return math.atan2(math.sin(value), math.cos(value))
 
 
+# Delivery calibration: maps a TARGET delivered angular rate to the angular.z
+# that /sim/cmd_vel has to carry. Measured on 2026-10-18 with cmd_delivery_probe
+# (8 s per segment, 20 Hz, simulation time, 1 s trimmed at each end).
+#
+# The plant has a deadband and a non-linear gain (0.085 -> 0.694 delivered ratio),
+# so a single global linear inverse is not valid; the table is interpolated
+# piecewise and clamped at the last verified point. 0.60 rad/s was measured to
+# invert the sign of the delivered rotation and is deliberately unreachable.
+IN_PLACE_V1 = (
+    (0.0, 0.0),
+    (0.0042, 0.05),
+    (0.0195, 0.10),
+    (0.0456, 0.15),
+    (0.0878, 0.20),
+    (0.1740, 0.30),
+    (0.2608, 0.40),
+    (0.3472, 0.50),
+)
+CALIBRATION_TABLES = {"in_place_v1": IN_PLACE_V1}
+MAX_COMMAND_ANGULAR = 0.50
+DEFAULT_MAX_DELIVERED_ANGULAR = 0.3472
+DISABLED_CALIBRATION = "disabled"
+
+
+def angular_command_from_delivered(target, table, max_delivered):
+    """Map a target delivered angular rate to the command to publish.
+
+    Returns (command, clamped). Sign is symmetric, zero maps to zero, and the
+    output never exceeds MAX_COMMAND_ANGULAR.
+    """
+    magnitude = abs(float(target))
+    clamped = False
+    if magnitude > max_delivered:
+        magnitude = float(max_delivered)
+        clamped = True
+    command = float(table[-1][1])
+    for (low_delivered, low_command), (high_delivered, high_command) in zip(table, table[1:]):
+        if magnitude <= high_delivered:
+            span = high_delivered - low_delivered
+            ratio = 0.0 if span <= 0.0 else (magnitude - low_delivered) / span
+            command = low_command + ratio * (high_command - low_command)
+            break
+    command = min(command, MAX_COMMAND_ANGULAR)
+    if target == 0.0:
+        return 0.0, clamped
+    return math.copysign(command, target), clamped
+
+
 def yaw_from_quaternion(q):
     return math.atan2(2.0 * (q.w * q.z + q.x * q.y),
                       1.0 - 2.0 * (q.y * q.y + q.z * q.z))
@@ -39,15 +87,27 @@ class WaypointPlan:
 
     def __init__(self, waypoints, speed, tolerance=0.35, angular_gain=1.8,
                  max_angular=0.22, turn_linear_speed=0.08,
-                 yaw_tolerance=math.radians(4.0), settle_cycles=8):
+                 yaw_tolerance=math.radians(4.0), settle_cycles=8,
+                 angular_calibration=DISABLED_CALIBRATION,
+                 max_delivered_angular=DEFAULT_MAX_DELIVERED_ANGULAR):
         self.waypoints = waypoints
         self.speed = abs(float(speed))
         self.tolerance = float(tolerance)
         self.angular_gain = float(angular_gain)
+        # With calibration enabled this is the TARGET delivered rate; with it
+        # disabled it keeps its historical meaning (the published command).
         self.max_angular = float(max_angular)
         self.turn_linear_speed = abs(float(turn_linear_speed))
         self.yaw_tolerance = float(yaw_tolerance)
         self.settle_cycles = int(settle_cycles)
+        self.angular_calibration = str(angular_calibration)
+        if self.angular_calibration == DISABLED_CALIBRATION:
+            self.angular_table = None
+        else:
+            self.angular_table = CALIBRATION_TABLES.get(self.angular_calibration)
+            if self.angular_table is None:
+                raise ValueError(f"unknown angular calibration: {angular_calibration}")
+        self.max_delivered_angular = float(max_delivered_angular)
         self.index = 0
         self.completed = False
         self.phase = "cruise"
@@ -56,10 +116,23 @@ class WaypointPlan:
         self.last_yaw_error = 0.0
         self.last_linear = 0.0
         self.last_angular = 0.0
+        self.last_angular_target = 0.0
+        self.last_angular_calibration = self.angular_calibration
+        self.last_angular_clamped = False
 
     def _command(self, linear, angular):
         self.last_linear = float(linear)
-        self.last_angular = float(angular)
+        self.last_angular_target = float(angular)
+        if self.angular_table is None:
+            self.last_angular = float(angular)
+            self.last_angular_calibration = DISABLED_CALIBRATION
+            self.last_angular_clamped = False
+        else:
+            command, clamped = angular_command_from_delivered(
+                float(angular), self.angular_table, self.max_delivered_angular)
+            self.last_angular = command
+            self.last_angular_calibration = self.angular_calibration
+            self.last_angular_clamped = clamped
         return self.last_linear, self.last_angular
 
     def command(self, x, y, yaw):
@@ -136,10 +209,14 @@ class WaypointPlan:
 
 if Node is not None:
     class WaypointController(Node):
-        def __init__(self, route, speed, report, max_angular=0.22):
+        def __init__(self, route, speed, report, max_angular=0.22,
+                     angular_calibration=DISABLED_CALIBRATION,
+                     max_delivered_angular=DEFAULT_MAX_DELIVERED_ANGULAR):
             super().__init__("visual_slam_waypoint_controller")
             self.plan = WaypointPlan(load_waypoints(route), speed,
-                                     max_angular=max_angular)
+                                     max_angular=max_angular,
+                                     angular_calibration=angular_calibration,
+                                     max_delivered_angular=max_delivered_angular)
             self.report = Path(report) if report else None
             self.publisher = self.create_publisher(Twist, "/sim/cmd_vel", 10)
             self.create_subscription(Odometry, "/sim/odom", self.odom_callback, 20)
@@ -168,10 +245,17 @@ def main():
     parser.add_argument("route")
     parser.add_argument("--speed", type=float, default=0.254522061)
     parser.add_argument("--max-angular", type=float, default=0.22)
+    parser.add_argument("--angular-calibration", default=DISABLED_CALIBRATION,
+                        choices=[DISABLED_CALIBRATION, *sorted(CALIBRATION_TABLES)],
+                        help="Delivery compensation table for angular.z")
+    parser.add_argument("--max-delivered-angular", type=float,
+                        default=DEFAULT_MAX_DELIVERED_ANGULAR)
     parser.add_argument("--report")
     args = parser.parse_args()
     rclpy.init(); node = WaypointController(args.route, args.speed, args.report,
-                                             args.max_angular)
+                                             args.max_angular,
+                                             args.angular_calibration,
+                                             args.max_delivered_angular)
     try:
         rclpy.spin(node)
     finally:
