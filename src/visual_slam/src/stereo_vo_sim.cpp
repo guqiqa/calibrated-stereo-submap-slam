@@ -327,12 +327,19 @@ public:
       rclcpp::SensorDataQoS().keep_last(5);
     left_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       left_topic_, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
+        // Debug injection owns the pose; real frames must not overwrite it.
+        if (debug_pose_injection_) {
+          return;
+        }
         left_queue_.push_back(std::move(message));
         trim_queue(left_queue_);
         try_process_queued_pair();
       });
     right_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       right_topic_, qos, [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
+        if (debug_pose_injection_) {
+          return;
+        }
         right_queue_.push_back(std::move(message));
         trim_queue(right_queue_);
         try_process_queued_pair();
@@ -348,6 +355,22 @@ public:
         try_initialize_calibration();
       });
     publish_status("waiting_for_camera_info", 0, 0, 0, 0.0, 0.0);
+    // Debug-only pose injection. Never enabled in an experiment: it publishes a
+    // fixed set of known poses and the image callbacks above drop every frame, so
+    // the visual update cannot overwrite the injected pose.
+    debug_pose_injection_ = declare_parameter<bool>("debug_pose_injection", false);
+    if (debug_pose_injection_) {
+      sim_odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
+        "/sim/odom", 10, [this](nav_msgs::msg::Odometry::ConstSharedPtr message) {
+          const auto & q = message->pose.pose.orientation;
+          last_sim_odom_yaw_deg_ = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z)) * 180.0 / CV_PI;
+        });
+      debug_injection_timer_ = create_wall_timer(std::chrono::milliseconds(200),
+        [this]() { run_debug_pose_injection(); });
+      RCLCPP_WARN(get_logger(),
+        "debug_pose_injection=true normal_visual_update_suspended=true");
+    }
   }
 
   ~StereoVoSim() override
@@ -3331,6 +3354,85 @@ private:
     (void)reason;
   }
 
+  // Debug-only: drive a fixed sequence of known optical poses through the real
+  // publication path and record what the odometry message and the Gazebo truth
+  // actually carry. No vision runs, so the pose stays exactly as injected.
+  void run_debug_pose_injection()
+  {
+    if (!calibration_ready_) {
+      return;
+    }
+    const double poses_deg[] = {0.0, 30.0, -30.0, 90.0};
+    constexpr int total_poses = 4;
+    constexpr int ticks_per_pose = 5;
+    if (debug_injection_step_ >= total_poses) {
+      debug_injection_timer_->cancel();
+      RCLCPP_WARN(get_logger(), "debug_pose_injection finished");
+      return;
+    }
+    const double yaw_deg = poses_deg[debug_injection_step_];
+    const double radians = yaw_deg * CV_PI / 180.0;
+    const double cosine = std::cos(radians);
+    const double sine = std::sin(radians);
+    world_T_current_ = cv::Mat::eye(4, 4, CV_64F);
+    world_T_current_.at<double>(0, 0) = cosine;
+    world_T_current_.at<double>(0, 2) = sine;
+    world_T_current_.at<double>(2, 0) = -sine;
+    world_T_current_.at<double>(2, 2) = cosine;
+    world_T_current_.at<double>(0, 3) = 1.0;
+    sync_heading_absolute(yaw_deg, visual_slam::HeadingSource::kInitialization,
+      "debug_pose_injection");
+
+    cv::Mat published_pose = world_T_current_.clone();
+    apply_planar_heading_offset(published_pose, visual_slam::wrap_deg_180(
+      heading_state_.committed_deg() - heading_deg_of(world_T_current_)));
+    const cv::Vec4d quaternion = visual_slam::rotation_to_quaternion_xyzw(
+      published_pose(cv::Rect(0, 0, 3, 3)));
+    const double quaternion_y_yaw_deg =
+      2.0 * std::atan2(quaternion[1], quaternion[3]) * 180.0 / CV_PI;
+    const double published_matrix_yaw_deg = heading_deg_of(published_pose);
+    const cv::Mat forward = published_pose(cv::Rect(0, 0, 3, 3)) *
+      (cv::Mat_<double>(3, 1) << 0.0, 0.0, 1.0);
+    const cv::Mat gazebo_forward = gazebo_T_map_(cv::Rect(0, 0, 3, 3)) * forward;
+    const double gazebo_mount_yaw_deg = std::atan2(
+      gazebo_forward.at<double>(1), gazebo_forward.at<double>(0)) * 180.0 / CV_PI;
+
+    const rclcpp::Time stamp = now();
+    publish_odometry(stamp, 100);
+
+    RCLCPP_INFO(get_logger(),
+      "DEBUG_INJECT step=%d injected=%.3f raw=%.3f quat_y=%.3f matrix=%.3f gazebo=%.3f sim_odom=%.3f",
+      debug_injection_step_, yaw_deg, heading_deg_of(world_T_current_), quaternion_y_yaw_deg,
+      published_matrix_yaw_deg, gazebo_mount_yaw_deg, last_sim_odom_yaw_deg_);
+
+    std_msgs::msg::String status;
+    std::ostringstream data;
+    data << "{\"state\":\"debug_pose_injection\""
+         << ",\"debug_pose_injection\":true"
+         << ",\"normal_visual_update_suspended\":true"
+         << ",\"step\":" << debug_injection_step_
+         << ",\"injected_optical_yaw_deg\":" << yaw_deg
+         << ",\"raw_world_T_current_yaw_deg\":" << heading_deg_of(world_T_current_)
+         << ",\"published_quat_x\":" << quaternion[0]
+         << ",\"published_quat_y\":" << quaternion[1]
+         << ",\"published_quat_z\":" << quaternion[2]
+         << ",\"published_quat_w\":" << quaternion[3]
+         << ",\"published_quat_y_yaw_deg\":" << quaternion_y_yaw_deg
+         << ",\"published_matrix_yaw_deg\":" << published_matrix_yaw_deg
+         << ",\"gazebo_mount_yaw_deg\":" << json_number(gazebo_mount_yaw_deg)
+         << ",\"sim_odom_yaw_deg\":" << json_number(last_sim_odom_yaw_deg_)
+         << ",\"host_time\":" << stamp.seconds()
+         << "}";
+    status.data = data.str();
+    status_publisher_->publish(status);
+
+    ++debug_injection_tick_;
+    if (debug_injection_tick_ >= ticks_per_pose) {
+      debug_injection_tick_ = 0;
+      ++debug_injection_step_;
+    }
+  }
+
   void publish_odometry(const builtin_interfaces::msg::Time & stamp, int inliers)
   {
     nav_msgs::msg::Odometry odometry;
@@ -3831,6 +3933,12 @@ private:
   double calibration_temperature_{1.0};
   bool baseline_parameter_declared_{false};
   bool calibration_ready_{false};
+  bool debug_pose_injection_{false};
+  int debug_injection_step_{0};
+  int debug_injection_tick_{0};
+  double last_sim_odom_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  rclcpp::TimerBase::SharedPtr debug_injection_timer_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sim_odom_subscription_;
   int rejected_pairs_{0};
   int queue_trim_drops_{0};
   int sync_rejects_{0};
