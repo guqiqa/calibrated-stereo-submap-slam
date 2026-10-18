@@ -3185,6 +3185,9 @@ private:
       (selected_transform.empty() ||
       (pose_translation(selected_transform) <= rotation_max_translation_m_ &&
       rotation_angle_deg(selected_transform) >= rotation_min_deg_));
+    last_rotation_dominant_ = rotation_dominant;
+    last_selected_rotation_deg_ = selected_transform.empty() ? 0.0 :
+      rotation_angle_deg(selected_transform);
     if (rotation_dominant) {
       apply_temporal_rotation(use_short_baseline_rotation ? world_T_current_ :
         temporal_reference_world_pose_, temporal_rotation);
@@ -3218,11 +3221,13 @@ private:
         inlier_count, pair_delta_ms, elapsed_ms(started));
       return;
     }
+    last_straight_constraint_applied_ = false;
     if (straight_motion_constraint_ && !visual_slam::has_significant_planar_yaw(
       selected_transform, rotation_min_deg_ * CV_PI / 180.0))
     {
       selected_transform = visual_slam::constrain_optical_relative_motion_to_straight_ground(
         selected_transform);
+      last_straight_constraint_applied_ = true;
     }
     selected_transform.at<double>(0, 3) *= stereo_translation_scale_factor_;
     selected_transform.at<double>(1, 3) *= stereo_translation_scale_factor_;
@@ -3813,6 +3818,9 @@ private:
          << ",\"heading_projection_error_deg\":" << visual_slam::wrap_deg_180(
            heading_deg_of(world_T_current_) - heading_state_.committed_deg())
          << ",\"selected_transform_yaw_deg\":" << json_number(last_selected_yaw_deg_)
+         << ",\"selected_transform_rotation_deg\":" << last_selected_rotation_deg_
+         << ",\"rotation_dominant\":" << (last_rotation_dominant_ ? "true" : "false")
+         << ",\"straight_constraint_applied\":" << (last_straight_constraint_applied_ ? "true" : "false")
          << ",\"pnp_transform_yaw_deg\":" << json_number(last_pnp_yaw_deg_)
          << ",\"rigid_transform_yaw_deg\":" << json_number(last_rigid_yaw_deg_)
          << ",\"reference_world_yaw_deg\":" << json_number(last_reference_yaw_deg_)
@@ -4079,6 +4087,9 @@ private:
   int sync_rejects_{0};
   double last_sync_reject_delta_ms_{0.0};
   double last_selected_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
+  double last_selected_rotation_deg_{0.0};
+  bool last_rotation_dominant_{false};
+  bool last_straight_constraint_applied_{false};
   double last_pnp_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
   double last_rigid_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
   double last_reference_yaw_deg_{std::numeric_limits<double>::quiet_NaN()};
