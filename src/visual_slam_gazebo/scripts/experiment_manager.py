@@ -103,6 +103,8 @@ def parse_args():
                         help="Pass a mapping-route prefix to the legacy runner for smoke tests")
     parser.add_argument("--route-waypoint-range", nargs=2, type=int, metavar=("START", "END"),
                         help="Pass an inclusive local waypoint interval to the runner")
+    parser.add_argument("--max-turn-angular", type=float, default=None,
+                        help="Target delivered angular rate for waypoint turns")
     parser.add_argument("--angular-calibration", default="disabled",
                         choices=("disabled", "in_place_v1", "session_v1"),
                         help="Delivery compensation for angular.z")
@@ -324,6 +326,8 @@ def main():
                     command.extend(["--route-waypoint-range",
                                     str(args.route_waypoint_range[0]),
                                     str(args.route_waypoint_range[1])])
+            if args.max_turn_angular is not None:
+                command.extend(["--max-turn-angular", str(args.max_turn_angular)])
             command.extend(["--angular-calibration", args.angular_calibration])
             command.extend(["--max-delivered-angular",
                             str(args.max_delivered_angular)])
