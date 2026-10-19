@@ -225,7 +225,8 @@ class ExperimentRecorder(Node):
             "host_time", "stamp", "x", "y", "yaw", "target_yaw", "yaw_error",
             "waypoint", "phase", "linear_x", "angular_z",
             "angular_target_delivered", "angular_calibration_enabled",
-            "angular_calibration_version", "angular_command_clamped"])
+            "angular_calibration_version", "angular_command_clamped",
+            "calibration_session_id"])
 
     def close_files(self):
         for file_handle in (self.status_file, self.odom_file, self.truth_file, self.control_file):
@@ -343,10 +344,14 @@ class ExperimentRecorder(Node):
                                           DISABLED_CALIBRATION)
             calibration_enabled = calibration_version != DISABLED_CALIBRATION
             clamped = bool(getattr(plan, "last_angular_clamped", False))
+            session_id = (getattr(plan, "angular_session", None) or {}).get("session_id", "")
+            if plan is None:
+                session_id = ""
             self.control_writer.writerow([
                 time.time(), self.latest_truth_stamp, x, y, yaw, target_yaw, yaw_error,
                 waypoint, phase, message.linear.x, message.angular.z,
-                target_delivered, calibration_enabled, calibration_version, clamped])
+                target_delivered, calibration_enabled, calibration_version, clamped,
+                session_id])
 
     def send_stop(self):
         message = Twist()
@@ -743,7 +748,8 @@ def run_one(node, mode, run, args, root):
         load_waypoints(args.waypoint_route), args.speed,
         max_angular=args.max_turn_angular,
         angular_calibration=args.angular_calibration,
-        max_delivered_angular=args.max_delivered_angular)
+        max_delivered_angular=args.max_delivered_angular,
+        angular_calibration_file=args.angular_calibration_file)
                           if args.waypoint_route else None)
     node.output_dir = output_dir
     node.open_files()
@@ -920,8 +926,10 @@ def parse_args():
     parser.add_argument("--warmup", type=float, default=3.0)
     parser.add_argument("--speed", type=float, default=0.2)
     parser.add_argument("--angular-calibration", default=DISABLED_CALIBRATION,
-                        choices=[DISABLED_CALIBRATION, "in_place_v1"],
+                        choices=[DISABLED_CALIBRATION, "in_place_v1", "session_v1"],
                         help="Delivery compensation table for angular.z")
+    parser.add_argument("--angular-calibration-file", default=None,
+                        help="Per-session calibration JSON produced by session_angular_calibration.py")
     parser.add_argument("--max-delivered-angular", type=float,
                         default=DEFAULT_MAX_DELIVERED_ANGULAR)
     parser.add_argument("--max-turn-angular", type=float, default=0.22,

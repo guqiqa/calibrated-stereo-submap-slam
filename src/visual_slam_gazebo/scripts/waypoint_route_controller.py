@@ -43,6 +43,56 @@ CALIBRATION_TABLES = {"in_place_v1": IN_PLACE_V1}
 MAX_COMMAND_ANGULAR = 0.50
 DEFAULT_MAX_DELIVERED_ANGULAR = 0.3472
 DISABLED_CALIBRATION = "disabled"
+SESSION_CALIBRATION = "session_v1"
+SESSION_ASYMMETRY_LIMIT = 0.05
+
+
+class SessionCalibrationError(ValueError):
+    """Raised when a session calibration file cannot be trusted."""
+
+
+def load_session_calibration(path):
+    """Load and validate a per-session calibration file.
+
+    Returns (table, metadata) where table is an ascending list of
+    (delivered, command) pairs. Refuses anything that is not a fresh, valid,
+    sim_odom-sourced session file with at least two positive anchors inside the
+    safe command range.
+    """
+    with open(path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if payload.get("calibration_version") != SESSION_CALIBRATION:
+        raise SessionCalibrationError(
+            f"unexpected calibration_version: {payload.get('calibration_version')}")
+    if payload.get("source") != "sim_odom":
+        raise SessionCalibrationError(f"unexpected calibration source: {payload.get('source')}")
+    if not payload.get("valid"):
+        raise SessionCalibrationError("session calibration is marked invalid")
+    if not str(payload.get("session_id") or "").strip():
+        raise SessionCalibrationError("session calibration has no session_id")
+    anchors = payload.get("anchors") or []
+    if len(anchors) < 2:
+        raise SessionCalibrationError("session calibration needs at least two anchors")
+    pairs = []
+    for anchor in anchors:
+        try:
+            delivered = float(anchor["delivered"])
+            command = float(anchor["command"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise SessionCalibrationError(f"malformed anchor: {anchor}") from error
+        if delivered <= 0.0:
+            raise SessionCalibrationError(f"non-positive delivered rate: {delivered}")
+        if abs(command) > MAX_COMMAND_ANGULAR + 1e-12:
+            raise SessionCalibrationError(f"anchor command above the safe limit: {command}")
+        pairs.append((delivered, command))
+    pairs.sort()
+    for (low_delivered, low_command), (high_delivered, high_command) in zip(pairs, pairs[1:]):
+        if high_delivered <= low_delivered or high_command <= low_command:
+            raise SessionCalibrationError("anchors are not strictly increasing")
+    asymmetry = float(payload.get("direction_asymmetry") or 0.0)
+    if asymmetry > SESSION_ASYMMETRY_LIMIT:
+        raise SessionCalibrationError(f"direction asymmetry too large: {asymmetry}")
+    return pairs, payload
 
 
 def angular_command_from_delivered(target, table, max_delivered):
@@ -89,7 +139,8 @@ class WaypointPlan:
                  max_angular=0.22, turn_linear_speed=0.08,
                  yaw_tolerance=math.radians(4.0), settle_cycles=8,
                  angular_calibration=DISABLED_CALIBRATION,
-                 max_delivered_angular=DEFAULT_MAX_DELIVERED_ANGULAR):
+                 max_delivered_angular=DEFAULT_MAX_DELIVERED_ANGULAR,
+                 angular_calibration_file=None):
         self.waypoints = waypoints
         self.speed = abs(float(speed))
         self.tolerance = float(tolerance)
@@ -101,13 +152,24 @@ class WaypointPlan:
         self.yaw_tolerance = float(yaw_tolerance)
         self.settle_cycles = int(settle_cycles)
         self.angular_calibration = str(angular_calibration)
+        self.angular_session = None
         if self.angular_calibration == DISABLED_CALIBRATION:
             self.angular_table = None
+            self.max_delivered_angular = float(max_delivered_angular)
+        elif self.angular_calibration == SESSION_CALIBRATION:
+            if not angular_calibration_file:
+                raise SessionCalibrationError(
+                    "session_v1 requires an --angular-calibration-file")
+            self.angular_table, self.angular_session = load_session_calibration(
+                angular_calibration_file)
+            # Never claim delivery above the highest verified anchor.
+            self.max_delivered_angular = min(float(max_delivered_angular),
+                                             self.angular_table[-1][0])
         else:
             self.angular_table = CALIBRATION_TABLES.get(self.angular_calibration)
             if self.angular_table is None:
                 raise ValueError(f"unknown angular calibration: {angular_calibration}")
-        self.max_delivered_angular = float(max_delivered_angular)
+            self.max_delivered_angular = float(max_delivered_angular)
         self.index = 0
         self.completed = False
         self.phase = "cruise"
@@ -123,10 +185,18 @@ class WaypointPlan:
     def _command(self, linear, angular):
         self.last_linear = float(linear)
         self.last_angular_target = float(angular)
+        self.last_angular_low_rate = False
         if self.angular_table is None:
             self.last_angular = float(angular)
             self.last_angular_calibration = DISABLED_CALIBRATION
             self.last_angular_clamped = False
+        elif abs(float(angular)) < self.angular_table[0][0]:
+            # Below the lowest verified anchor: do not extrapolate. Hold the
+            # lowest safe command and flag the target as not promised.
+            self.last_angular_low_rate = True
+            self.last_angular = math.copysign(self.angular_table[0][1], float(angular))
+            self.last_angular_calibration = self.angular_calibration
+            self.last_angular_clamped = True
         else:
             command, clamped = angular_command_from_delivered(
                 float(angular), self.angular_table, self.max_delivered_angular)
