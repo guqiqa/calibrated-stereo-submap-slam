@@ -119,6 +119,10 @@ def parse_args():
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     parser.add_argument("--rotation-metric-pnp", action="store_true",
                         help="Enable guarded stereo-PnP yaw for VO diagnostics")
+    parser.add_argument("--angular-calibration", default="disabled",
+                        choices=("disabled", "in_place_v1"),
+                        help="Delivery compensation table for angular.z")
+    parser.add_argument("--max-delivered-angular", type=float, default=0.3472)
     parser.add_argument("--observability-mode", default="b0_plain",
                         choices=("b0_plain", "b1_flag", "b2_dual"),
                         help="Visual observability state management mode")
@@ -366,6 +370,8 @@ def main():
     if args.rotation_metric_pnp:
         command.append("--rotation-metric-pnp")
     command.extend(["--observability-mode", args.observability_mode])
+    command.extend(["--angular-calibration", args.angular_calibration])
+    command.extend(["--max-delivered-angular", str(args.max_delivered_angular)])
     if waypoint_route:
         command.extend(["--waypoint-route", str(waypoint_route)])
     if args.scene_manifest:

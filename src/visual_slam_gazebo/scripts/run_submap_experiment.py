@@ -123,6 +123,7 @@ class ExperimentRecorder(Node):
         self.waypoint_route = waypoint_route
         self.waypoint_plan = None
         self.latest_truth_pose = None
+        self.latest_truth_stamp = 0.0
         self.submap_regions = self.load_submap_regions(submap_truth)
         self.route_labels = self.load_route_labels(waypoint_route)
         self.expected_mode = None
@@ -221,7 +222,7 @@ class ExperimentRecorder(Node):
         self.odom_writer.writerow(header)
         self.truth_writer.writerow(header)
         self.control_writer.writerow([
-            "host_time", "x", "y", "yaw", "target_yaw", "yaw_error",
+            "host_time", "stamp", "x", "y", "yaw", "target_yaw", "yaw_error",
             "waypoint", "phase", "linear_x", "angular_z",
             "angular_target_delivered", "angular_calibration_enabled",
             "angular_calibration_version", "angular_command_clamped"])
@@ -343,7 +344,7 @@ class ExperimentRecorder(Node):
             calibration_enabled = calibration_version != DISABLED_CALIBRATION
             clamped = bool(getattr(plan, "last_angular_clamped", False))
             self.control_writer.writerow([
-                time.time(), x, y, yaw, target_yaw, yaw_error,
+                time.time(), self.latest_truth_stamp, x, y, yaw, target_yaw, yaw_error,
                 waypoint, phase, message.linear.x, message.angular.z,
                 target_delivered, calibration_enabled, calibration_version, clamped])
 
@@ -416,6 +417,7 @@ class ExperimentRecorder(Node):
             message.pose.pose.position.x,
             message.pose.pose.position.y,
         ))
+        self.latest_truth_stamp = stamp_seconds(message.header.stamp)
         self.latest_truth_pose = (
             message.pose.pose.position.x, message.pose.pose.position.y,
             yaw_from_quaternion(message.pose.pose.orientation),
