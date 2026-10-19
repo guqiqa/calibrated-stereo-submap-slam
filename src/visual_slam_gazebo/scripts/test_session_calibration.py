@@ -109,14 +109,17 @@ class SessionCalibrationPlanTest(unittest.TestCase):
                           max_delivered_angular=0.9)
         self.assertAlmostEqual(plan.max_delivered_angular, 0.3911, places=6)
 
-    def test_below_lowest_anchor_is_flagged_not_extrapolated(self):
+    def test_below_lowest_anchor_passes_through_uncompensated(self):
         plan = self._plan(angular_calibration=SESSION_CALIBRATION,
                           angular_calibration_file=self._file(),
                           max_angular=0.05)
         plan.command(0.0, 0.0, 0.0)
         self.assertLess(abs(plan.last_angular_target), 0.2448)
         self.assertTrue(plan.last_angular_low_rate)
-        self.assertAlmostEqual(abs(plan.last_angular), 0.35, places=6)
+        # No compensation below the band: the command equals the target, so the
+        # controller can still converge instead of being held at the low anchor.
+        self.assertAlmostEqual(plan.last_angular, plan.last_angular_target, places=12)
+        self.assertFalse(plan.last_angular_clamped)
 
     def test_inside_range_maps_through_the_anchors(self):
         plan = self._plan(angular_calibration=SESSION_CALIBRATION,

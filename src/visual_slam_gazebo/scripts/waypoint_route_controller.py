@@ -191,12 +191,14 @@ class WaypointPlan:
             self.last_angular_calibration = DISABLED_CALIBRATION
             self.last_angular_clamped = False
         elif abs(float(angular)) < self.angular_table[0][0]:
-            # Below the lowest verified anchor: do not extrapolate. Hold the
-            # lowest safe command and flag the target as not promised.
+            # Below the lowest verified anchor the compensation is NOT applied:
+            # holding a fixed lowest command fights the controller and prevents it
+            # from ever converging, which is what kept the VO rotating. Pass the
+            # target through unchanged and flag the cycle as unpromised instead.
             self.last_angular_low_rate = True
-            self.last_angular = math.copysign(self.angular_table[0][1], float(angular))
+            self.last_angular = float(angular)
             self.last_angular_calibration = self.angular_calibration
-            self.last_angular_clamped = True
+            self.last_angular_clamped = False
         else:
             command, clamped = angular_command_from_delivered(
                 float(angular), self.angular_table, self.max_delivered_angular)

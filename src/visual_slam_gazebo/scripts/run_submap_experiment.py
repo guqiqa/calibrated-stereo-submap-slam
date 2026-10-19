@@ -226,7 +226,7 @@ class ExperimentRecorder(Node):
             "waypoint", "phase", "linear_x", "angular_z",
             "angular_target_delivered", "angular_calibration_enabled",
             "angular_calibration_version", "angular_command_clamped",
-            "calibration_session_id"])
+            "angular_low_rate_passthrough", "calibration_session_id"])
 
     def close_files(self):
         for file_handle in (self.status_file, self.odom_file, self.truth_file, self.control_file):
@@ -344,6 +344,7 @@ class ExperimentRecorder(Node):
                                           DISABLED_CALIBRATION)
             calibration_enabled = calibration_version != DISABLED_CALIBRATION
             clamped = bool(getattr(plan, "last_angular_clamped", False))
+            low_rate = bool(getattr(plan, "last_angular_low_rate", False))
             session_id = (getattr(plan, "angular_session", None) or {}).get("session_id", "")
             if plan is None:
                 session_id = ""
@@ -351,7 +352,7 @@ class ExperimentRecorder(Node):
                 time.time(), self.latest_truth_stamp, x, y, yaw, target_yaw, yaw_error,
                 waypoint, phase, message.linear.x, message.angular.z,
                 target_delivered, calibration_enabled, calibration_version, clamped,
-                session_id])
+                low_rate, session_id])
 
     def send_stop(self):
         message = Twist()
