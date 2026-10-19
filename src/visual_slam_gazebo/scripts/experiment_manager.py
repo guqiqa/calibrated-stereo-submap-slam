@@ -103,6 +103,11 @@ def parse_args():
                         help="Pass a mapping-route prefix to the legacy runner for smoke tests")
     parser.add_argument("--route-waypoint-range", nargs=2, type=int, metavar=("START", "END"),
                         help="Pass an inclusive local waypoint interval to the runner")
+    parser.add_argument("--angular-calibration", default="disabled",
+                        choices=("disabled", "in_place_v1", "session_v1"),
+                        help="Delivery compensation for angular.z")
+    parser.add_argument("--angular-calibration-file", default=None)
+    parser.add_argument("--max-delivered-angular", type=float, default=0.3472)
     parser.add_argument("--calibration-model", default=None,
                         help="Frozen calibration_model.json used by method P")
     parser.add_argument("--preflight", action="store_true",
@@ -319,6 +324,12 @@ def main():
                     command.extend(["--route-waypoint-range",
                                     str(args.route_waypoint_range[0]),
                                     str(args.route_waypoint_range[1])])
+            command.extend(["--angular-calibration", args.angular_calibration])
+            command.extend(["--max-delivered-angular",
+                            str(args.max_delivered_angular)])
+            if args.angular_calibration_file:
+                command.extend(["--angular-calibration-file",
+                                str(args.angular_calibration_file)])
             if calibration_model:
                 command.extend(["--calibration-model", str(calibration_model)])
             if map_database:
