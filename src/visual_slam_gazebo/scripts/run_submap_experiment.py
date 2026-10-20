@@ -864,6 +864,13 @@ def run_one(node, mode, run, args, root):
         (output_dir / "summary.json").write_text(
             json.dumps(summary, indent=2, ensure_ascii=True), encoding="utf-8"
         )
+        if getattr(args, "require_coverage_labels", False):
+            fraction = summary.get("coverage_label_available_fraction") or 0.0
+            if fraction <= 0.0:
+                raise SystemExit(
+                    "coverage labels were not loaded "
+                    f"(coverage_label_available_fraction={fraction}); "
+                    "refusing to continue without --scene-manifest and --candidate-label")
         print(json.dumps(summary, ensure_ascii=True))
     finally:
         node.active = False
@@ -948,6 +955,8 @@ def parse_args():
     parser.add_argument("--scene-manifest")
     parser.add_argument("--submap-truth")
     parser.add_argument("--candidate-label")
+    parser.add_argument("--require-coverage-labels", action="store_true",
+                        help="Fail the run when coverage labels are unavailable")
     parser.add_argument("--calibration-model")
     parser.add_argument("--map-database")
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")

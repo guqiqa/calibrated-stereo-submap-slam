@@ -116,6 +116,7 @@ def parse_args():
                         help="require the formal Gate A-D preflight to pass after analysis")
     parser.add_argument("--dataset-manifest", default=None,
                         help="frozen full dataset manifest used by formal preflight")
+    parser.add_argument("--require-coverage-labels", action="store_true")
     parser.add_argument("--map-database", default=None)
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     parser.add_argument("--separation-report", default=None)
@@ -336,6 +337,8 @@ def main():
                                 str(args.angular_calibration_file)])
             if calibration_model:
                 command.extend(["--calibration-model", str(calibration_model)])
+            if args.require_coverage_labels:
+                command.append("--require-coverage-labels")
             if map_database:
                 command.extend(["--map-database", str(map_database),
                                 "--map-database-mode", args.map_database_mode])
