@@ -390,15 +390,71 @@ void layer_rigid_contract()
 
 }  // namespace
 
+// Layer 7 ---------------------------------------------------------------
+// The map frame that a database was built in must be able to differ from the pose a
+// later run starts at. world_T_current_ is the start pose expressed in that frame.
+void layer_world_frame_anchor()
+{
+  std::printf("\n[L7] map frame anchoring for query runs\n");
+  const double camera_offset_x = 0.08;
+  const double camera_offset_y = 0.035;
+
+  // Baseline: the map frame equals the start pose, so the anchor is identity.
+  const cv::Mat baseline_map = visual_slam::make_gazebo_T_initial_optical(
+    camera_offset_x, camera_offset_y, 0.32, 0.0);
+  const cv::Mat baseline_start = visual_slam::make_gazebo_T_initial_optical(
+    camera_offset_x, camera_offset_y, 0.32, 0.0);
+  const cv::Mat baseline_anchor = baseline_map.inv() * baseline_start;
+  expect_near("baseline anchor translation x", baseline_anchor.at<double>(0, 3), 0.0, 1e-9);
+  expect_near("baseline anchor translation y", baseline_anchor.at<double>(1, 3), 0.0, 1e-9);
+  expect_near("baseline anchor translation z", baseline_anchor.at<double>(2, 3), 0.0, 1e-9);
+  expect_near("baseline anchor heading", yaw_deg(baseline_anchor), 0.0, 1e-9);
+
+  // Query case: database built at the origin, run starts at (-0.5, -17.35) facing pi.
+  const double base_x = -0.5;
+  const double base_y = -17.35;
+  const double base_yaw = CV_PI;
+  const double camera_x = base_x + std::cos(base_yaw) * camera_offset_x -
+    std::sin(base_yaw) * camera_offset_y;
+  const double camera_y = base_y + std::sin(base_yaw) * camera_offset_x +
+    std::cos(base_yaw) * camera_offset_y;
+  const cv::Mat query_start = visual_slam::make_gazebo_T_initial_optical(
+    camera_x, camera_y, 0.32, base_yaw);
+  const cv::Mat anchor = baseline_map.inv() * query_start;
+
+  // The anchor must reproduce the start pose when converted back to Gazebo.
+  const cv::Mat round_trip = baseline_map * anchor;
+  expect_near("round trip camera x", round_trip.at<double>(0, 3), camera_x, 1e-9);
+  expect_near("round trip camera y", round_trip.at<double>(1, 3), camera_y, 1e-9);
+  expect_near("round trip yaw", yaw_deg(round_trip), yaw_deg(query_start), 1e-9);
+
+  // The anchor must carry a real offset, not an identity.
+  expect_true("anchor differs from identity",
+              std::abs(anchor.at<double>(0, 3)) + std::abs(anchor.at<double>(1, 3)) > 1.0);
+  // Heading must stay finite and match the start yaw in [-180, 180].
+  double anchor_heading = yaw_deg(anchor);
+  while (anchor_heading > 180.0) {
+    anchor_heading -= 360.0;
+  }
+  while (anchor_heading < -180.0) {
+    anchor_heading += 360.0;
+  }
+  expect_near("anchor heading magnitude", std::abs(anchor_heading), 180.0, 1e-6);
+  report("anchor heading deg", anchor_heading);
+  report("anchor translation x", anchor.at<double>(0, 3));
+  report("anchor translation y", anchor.at<double>(1, 3));
+}
+
 int main()
 {
-  std::printf("pose convention test (six layers)\n");
+  std::printf("pose convention test (seven layers)\n");
   layer_pnp_round_trip();
   layer_compose_direction();
   layer_optical_to_gazebo();
   layer_axis_reflection();
   layer_static_injection();
   layer_rigid_contract();
+  layer_world_frame_anchor();
   std::printf("\nchecks=%d failures=%d\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

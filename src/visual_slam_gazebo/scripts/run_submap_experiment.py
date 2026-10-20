@@ -524,7 +524,8 @@ def stop_process(process, interrupt_timeout=8.0, kill_timeout=3.0):
 def start_vo(mode, log_path, map_export_path=None, initial_pose=None,
              scene_manifest=None, submap_truth=None, candidate_label=None,
              calibration_model=None, map_database=None, map_database_mode="online",
-             rotation_metric_pnp_enabled=False, observability_mode="b0_plain"):
+             rotation_metric_pnp_enabled=False, observability_mode="b0_plain",
+             map_frame_pose=None):
     log_handle = log_path.open("w", encoding="utf-8")
     launch_args = ["ros2", "launch", "visual_slam", "stereo_vo_sim.launch.py",
                    f"submap_mode:={mode}",
@@ -554,6 +555,16 @@ def start_vo(mode, log_path, map_export_path=None, initial_pose=None,
             "initial_gazebo_z:=0.32",
             f"initial_gazebo_yaw:={yaw}",
             "straight_motion_constraint:=false",
+        ])
+    if map_frame_pose is not None:
+        frame_x, frame_y, frame_yaw = map_frame_pose
+        frame_camera_x = frame_x + math.cos(frame_yaw) * 0.08 - math.sin(frame_yaw) * 0.035
+        frame_camera_y = frame_y + math.sin(frame_yaw) * 0.08 + math.cos(frame_yaw) * 0.035
+        launch_args.extend([
+            f"map_frame_x:={frame_camera_x}",
+            f"map_frame_y:={frame_camera_y}",
+            "map_frame_z:=0.32",
+            f"map_frame_yaw:={frame_yaw}",
         ])
     process = subprocess.Popen(
         launch_args,
@@ -774,11 +785,15 @@ def run_one(node, mode, run, args, root):
     node.visual_positions.clear()
     map_export_path = output_dir / "map_points.csv" if args.export_map else None
     initial_pose = node.waypoint_plan.waypoints[0] if node.waypoint_plan else None
+    # Only meaningful when the run reads an existing map database: the database is
+    # expressed in the frame of the run that built it, so the query run must anchor
+    # its pose there instead of at its own start.
+    map_frame_pose = args.map_frame_pose if args.map_database else None
     process, log_handle = start_vo(
         mode, output_dir / "stereo_vo_sim.log", map_export_path, initial_pose,
         args.scene_manifest, args.submap_truth, args.candidate_label,
         args.calibration_model, args.map_database, args.map_database_mode,
-        args.rotation_metric_pnp, args.observability_mode)
+        args.rotation_metric_pnp, args.observability_mode, map_frame_pose)
     resource_monitor = ResourceMonitor(process, output_dir / "resource_usage.csv")
     resource_monitor.start()
     bag_process = None
@@ -953,6 +968,10 @@ def parse_args():
     parser.add_argument("--waypoint-route", default=None,
                         help="Generated route CSV; /sim/odom is used only by the motion controller")
     parser.add_argument("--scene-manifest")
+    parser.add_argument("--map-frame-pose", nargs=3, type=float, metavar=("X", "Y", "YAW"),
+                        default=None,
+                        help="Origin of the loaded map database in Gazebo coordinates; "
+                             "used to anchor world_T_current_ for query runs")
     parser.add_argument("--submap-truth")
     parser.add_argument("--candidate-label")
     parser.add_argument("--require-coverage-labels", action="store_true",

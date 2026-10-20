@@ -178,6 +178,14 @@ public:
     initial_gazebo_y_ = declare_parameter<double>("initial_gazebo_y", 0.035);
     initial_gazebo_z_ = declare_parameter<double>("initial_gazebo_z", 0.32);
     initial_gazebo_yaw_ = declare_parameter<double>("initial_gazebo_yaw", 0.0);
+    // Origin of the map frame the database was built in. When it equals the
+    // initial camera pose the map frame is the start frame (legacy behaviour and
+    // world_T_current_ starts at identity). Query runs that spawn elsewhere must
+    // pass the mapping run's origin so retrieval compares poses in one frame.
+    map_frame_x_ = declare_parameter<double>("map_frame_x", initial_gazebo_x_);
+    map_frame_y_ = declare_parameter<double>("map_frame_y", initial_gazebo_y_);
+    map_frame_z_ = declare_parameter<double>("map_frame_z", initial_gazebo_z_);
+    map_frame_yaw_ = declare_parameter<double>("map_frame_yaw", initial_gazebo_yaw_);
     odom_frame_ = declare_parameter<std::string>("odom_frame", "visual_odom_sim");
     camera_frame_ = declare_parameter<std::string>("camera_frame", "stereo_left_optical_frame");
     submap_mode_ = declare_parameter<std::string>("submap_mode", "joint");
@@ -231,6 +239,8 @@ public:
     observability_thresholds_.relocalization_timeout_frames = declare_parameter<int>(
       "obs_relocalization_timeout_frames", 90);
     gazebo_T_map_ = visual_slam::make_gazebo_T_initial_optical(
+      map_frame_x_, map_frame_y_, map_frame_z_, map_frame_yaw_);
+    gazebo_T_initial_optical_ = visual_slam::make_gazebo_T_initial_optical(
       initial_gazebo_x_, initial_gazebo_y_, initial_gazebo_z_, initial_gazebo_yaw_);
     if (online_submap_id_mode_ != "distance" && online_submap_id_mode_ != "scene") {
       throw std::runtime_error("online_submap_id_mode must be distance or scene");
@@ -771,10 +781,13 @@ private:
     rotation_anchor_.reset();
     rotation_anchor_world_pose_.release();
     rotation_anchor_gap_frames_ = 0;
-    world_T_current_ = cv::Mat::eye(4, 4, CV_64F);
+    world_T_current_ = gazebo_T_map_.inv() * gazebo_T_initial_optical_;
     // Initialization sets measured and committed together, because from here on
     // both chains start from the same absolute heading.
-    heading_state_.reset(0.0);
+    const double initial_heading_deg =
+      std::atan2(world_T_current_.at<double>(0, 2),
+      world_T_current_.at<double>(2, 2)) * 180.0 / CV_PI;
+    heading_state_.reset(initial_heading_deg);
     last_heading_update_ = visual_slam::HeadingUpdate{};
     reference_world_pose_ = world_T_current_.clone();
     temporal_reference_world_pose_ = world_T_current_.clone();
@@ -4015,6 +4028,11 @@ private:
   double initial_gazebo_y_{};
   double initial_gazebo_z_{};
   double initial_gazebo_yaw_{};
+  double map_frame_x_{};
+  double map_frame_y_{};
+  double map_frame_z_{};
+  double map_frame_yaw_{};
+  cv::Mat gazebo_T_initial_optical_;
   double fallback_baseline_m_{0.07};
   std::string submap_mode_;
   double submap_length_m_{};

@@ -19,6 +19,10 @@ def generate_launch_description():
         DeclareLaunchArgument("initial_gazebo_y", default_value="0.035"),
         DeclareLaunchArgument("initial_gazebo_z", default_value="0.32"),
         DeclareLaunchArgument("initial_gazebo_yaw", default_value="0.0"),
+        DeclareLaunchArgument("map_frame_x", default_value="0.08"),
+        DeclareLaunchArgument("map_frame_y", default_value="0.035"),
+        DeclareLaunchArgument("map_frame_z", default_value="0.32"),
+        DeclareLaunchArgument("map_frame_yaw", default_value="0.0"),
         DeclareLaunchArgument("straight_motion_constraint", default_value="true"),
         DeclareLaunchArgument("observability_mode", default_value="b0_plain"),
         DeclareLaunchArgument("rotation_metric_pnp_enabled", default_value="false"),
@@ -47,6 +51,14 @@ def generate_launch_description():
                         LaunchConfiguration("initial_gazebo_z"), value_type=float),
                     "initial_gazebo_yaw": ParameterValue(
                         LaunchConfiguration("initial_gazebo_yaw"), value_type=float),
+                    "map_frame_x": ParameterValue(
+                        LaunchConfiguration("map_frame_x"), value_type=float),
+                    "map_frame_y": ParameterValue(
+                        LaunchConfiguration("map_frame_y"), value_type=float),
+                    "map_frame_z": ParameterValue(
+                        LaunchConfiguration("map_frame_z"), value_type=float),
+                    "map_frame_yaw": ParameterValue(
+                        LaunchConfiguration("map_frame_yaw"), value_type=float),
                     "straight_motion_constraint": ParameterValue(
                         LaunchConfiguration("straight_motion_constraint"), value_type=bool),
                     "observability_mode": LaunchConfiguration("observability_mode"),

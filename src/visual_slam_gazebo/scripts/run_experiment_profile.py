@@ -116,6 +116,8 @@ def parse_args():
                         help="Use an inclusive waypoint interval for a local smoke test")
     parser.add_argument("--calibration-model", default=None)
     parser.add_argument("--require-coverage-labels", action="store_true")
+    parser.add_argument("--map-frame-pose", nargs=3, type=float,
+                        metavar=("X", "Y", "YAW"), default=None)
     parser.add_argument("--map-database", default=None)
     parser.add_argument("--map-database-mode", choices=("online", "build", "load"), default="online")
     parser.add_argument("--rotation-metric-pnp", action="store_true",
@@ -389,6 +391,8 @@ def main():
         command.extend(["--calibration-model", str(Path(args.calibration_model).resolve())])
     if args.require_coverage_labels:
         command.append("--require-coverage-labels")
+    if args.map_frame_pose is not None:
+        command.extend(["--map-frame-pose", *[str(value) for value in args.map_frame_pose]])
     if args.map_database:
         command.extend(["--map-database", str(Path(args.map_database).resolve()),
                         "--map-database-mode", args.map_database_mode])
